@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Shinsekai 资源上传示例脚本（API Key 认证）
+Shinsekai 资源上传示例脚本。
 
-真正的上传逻辑已经封装在 shinsekai_upload_client.py。
-这个文件只负责填写 API_KEY、UPLOADS，然后调用 client。
+默认模式使用已有上传 API Key，和旧版 SDK 一样。
+如果宿主是 EXE 客户端，也可以开启设备认证：SDK 会读取或创建本地 device_id，
+再向 /auth/device 报到，拿到游客或已绑定用户的 access_token/API Key 后上传。
 """
 
 import sys
@@ -16,11 +17,30 @@ if sys.platform == "win32":
 
 
 API = "https://api.end0rph1n.icu"
+
+# 旧版 API Key 模式：保持 USE_DEVICE_AUTH = False，然后填写这个值。
 API_KEY = "sk-sn-your_key"
+
+# 设备认证模式：EXE 推荐打开，并把 device_id 持久化到本地文件。
+USE_DEVICE_AUTH = False
+DEVICE_ID_FILE = "./shinsekai_device_id.txt"
+DEVICE_ID = ""          # 如果不想用文件，也可以直接填稳定 UUID。
+DEVICE_FINGERPRINT = "" # 可选：浏览器/宿主采集的稳定设备指纹；SDK 会按网站逻辑归一化为 64 位 SHA-256 hex。
+
+# 预绑定：EXE 首次启动时，如果用户已经知道网页/其他设备的绑定码，填这里。
+# SDK 会把它随 /auth/device 一起提交，服务端直接把本机 device_id 挂到主用户下面。
+PREBIND_CODE = ""
+
+# 认领：当前客户端已经认证后，输入另一个游客/设备显示的绑定码，调 /auth/device/claim。
+# 服务端会把那个绑定码所属用户的资源迁移到当前用户下面。
+CLAIM_BIND_CODE = ""
+
+# 可选分片并发数。1 表示旧版顺序上传；5 接近网页上传器当前策略。
+PARALLEL_UPLOADS = 5
 
 
 def print_progress(progress: UploadProgress) -> None:
-    """命令行进度输出。软件内集成时可以换成 UI 进度条回调。"""
+    """命令行进度输出；接入软件时可以替换成 UI 进度回调。"""
     if progress.stage in ("hashing", "started", "completing", "done"):
         print(f"  {progress.message}")
         return
@@ -32,29 +52,76 @@ def print_progress(progress: UploadProgress) -> None:
         )
 
 
-if __name__ == "__main__":
+def make_client() -> ShinsekaiUploadClient:
+    if USE_DEVICE_AUTH:
+        if DEVICE_ID:
+            client = ShinsekaiUploadClient.from_device(
+                device_id=DEVICE_ID,
+                fingerprint=DEVICE_FINGERPRINT or None,
+                bind_code=PREBIND_CODE or None,
+                base_url=API,
+                parallel_uploads=PARALLEL_UPLOADS,
+            )
+        else:
+            client = ShinsekaiUploadClient.from_device_file(
+                DEVICE_ID_FILE,
+                fingerprint=DEVICE_FINGERPRINT or None,
+                bind_code=PREBIND_CODE or None,
+                base_url=API,
+                parallel_uploads=PARALLEL_UPLOADS,
+            )
+
+        if client.device_auth:
+            print(f"设备 public_id: {client.device_auth.public_id}")
+            print(f"设备 device_id: {client.device_auth.device_id}")
+            print(f"本用户绑定码: {client.bind_code}")
+            if client.bind_code:
+                print(f"社区自动绑定链接: {client.community_bind_url()}")
+            print(f"是否游客: {client.device_auth.is_guest}")
+
+        if CLAIM_BIND_CODE:
+            auth = client.claim_bind_code(CLAIM_BIND_CODE)
+            print("绑定码认领完成。")
+            print(f"当前 public_id: {auth.public_id}")
+            print(f"当前绑定码: {auth.bind_code}")
+            print(f"是否游客: {auth.is_guest}")
+
+        return client
+
     if API_KEY == "sk-sn-your_key":
-        print("Set API_KEY first.")
+        print("请先设置 API_KEY；或者把 USE_DEVICE_AUTH 改成 True 使用游客/设备认证。")
         sys.exit(1)
 
-    # 格式: (资源名, 文件路径, 资源类型, 上传者, 描述)
-    # resource_type: "character_pack"(.char) 或 "background_pack"(.bg)
+    return ShinsekaiUploadClient(
+        API_KEY,
+        base_url=API,
+        parallel_uploads=PARALLEL_UPLOADS,
+    )
+
+
+if __name__ == "__main__":
+    # 格式：(资源名, 文件路径, 资源类型, 上传者展示名, 描述, 已验证模型列表)
+    # resource_type: "character_pack"（.char）或 "background_pack"（.bg）
+    # verified_models 只给 character_pack 使用，可选值：GPT-Sovits / Genie / MiniMax / Qwen。
+    # background_pack 不允许传模型参数；传了会被 SDK 拒绝，避免背景资源带错模型标签。
+    # uploader 只是页面展示字段，真正资源归属由服务端根据 API Key/JWT 决定。
     UPLOADS = [
-        # ("nanami", "./nanami.char", "character_pack", "End0rph1n", "DR character"),
-        # ("classroom", "./classroom.bg", "background_pack", "End0rph1n", "classroom bg"),
+        # ("七海千秋", "./nanami.char", "character_pack", "", "角色包说明", ["GPT-Sovits", "Qwen"]),
+        # ("教室背景", "./classroom.bg", "background_pack", "", "背景包说明"),
     ]
 
     if not UPLOADS:
-        print("UPLOADS list is empty. Edit the script to add files.")
+        print("UPLOADS 列表为空。请编辑脚本添加要上传的文件。")
         sys.exit(0)
 
-    client = ShinsekaiUploadClient(API_KEY, base_url=API)
+    client = make_client()
     ok = 0
 
     for item in UPLOADS:
         name, filepath, resource_type = item[0], item[1], item[2]
         uploader = item[3] if len(item) > 3 else ""
         description = item[4] if len(item) > 4 else ""
+        verified_models = item[5] if len(item) > 5 else None
         print(f"[{name}] {filepath}")
 
         try:
@@ -64,11 +131,12 @@ if __name__ == "__main__":
                 resource_type,
                 uploader=uploader,
                 description=description,
+                verified_models=verified_models,
                 progress=print_progress,
             )
             print(f"  url: {result.get('url', '')}\n")
             ok += 1
         except (OSError, ShinsekaiUploadError, ValueError) as exc:
-            print(f"  failed: {exc}\n")
+            print(f"  失败: {exc}\n")
 
-    print(f"result: {ok}/{len(UPLOADS)} succeeded")
+    print(f"结果: {ok}/{len(UPLOADS)} 个上传成功")
