@@ -89,4 +89,30 @@ python -X utf8 upload_apikey.py
 | `description` | 资源说明，可不填 |
 | `progress` | 进度回调函数，可不填 |
 
-上传成功后会返回服务端资源信息，其中最常用的是 `result["url"]`。
+## 返回消息体
+
+`upload_resource(...)` 上传成功后会返回一个 `dict`，也就是服务端最终创建出来的资源信息：
+
+```json
+{
+  "id": 1,
+  "name": "七海千秋",
+  "type": "character",
+  "uploader": "End0rph1n",
+  "time": "2026-05-17",
+  "url": "https://r2.end0rph1n.icu/uploads/character_pack/nanami.char"
+}
+```
+
+字段说明：
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 资源站里的资源 ID |
+| `name` | 上传时传入的资源名称 |
+| `type` | `character` 或 `background` |
+| `uploader` | 上传者名称；没传时为 `null` |
+| `time` | 服务端入库日期，格式为 `YYYY-MM-DD` |
+| `url` | 资源下载地址，软件内最常用这个字段 |
+
+上传失败时，SDK 会抛出 `ShinsekaiUploadError`，错误文本里会带上服务端返回的状态码和 `detail`。
