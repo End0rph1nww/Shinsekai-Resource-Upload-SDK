@@ -81,7 +81,64 @@ pip install -r requirements.txt
 
 ## 快速开始
 
-### 1. API Key 上传
+### 1. 最小实现：未绑定用户先上传，再用 `?bind=` 管理资源
+
+这是 EXE 最推荐接入的主流程：用户不需要先注册、不需要先输入绑定码，也不需要提前打开网站。用户在 EXE 里点击上传时，SDK 生成或复用本机稳定 `device_id`，调用 `/auth/device` 获取服务端固定 `bind_code`，然后直接上传文件。上传后，EXE 的“浏览社区资源页”按钮打开 `/resources?bind=XXXXXX`，网站会自动把这批已上传资源接入当前网页身份，用户就能在网页端管理。
+
+```python
+from pathlib import Path
+import os
+import webbrowser
+
+from shinsekai_upload_client import ShinsekaiUploadClient
+
+
+def shinsekai_device_file() -> str:
+    # 必须放在稳定位置。同一个文件会一直保存同一个 device_id，也就一直拿到同一个 bind_code。
+    root = Path(os.getenv("APPDATA", ".")) / "Shinsekai"
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root / "device_id.txt")
+
+
+def make_client() -> ShinsekaiUploadClient:
+    # 在用户点击上传或点击进入社区时调用都可以；SDK 会复用同一个 device_id 文件。
+    return ShinsekaiUploadClient.from_device_file(
+        shinsekai_device_file(),
+        fingerprint=ShinsekaiUploadClient.normalize_fingerprint("gpu-renderer|8|win32|-540"),
+        parallel_uploads=5,
+    )
+
+
+def on_upload_button_clicked(filepath: str):
+    client = make_client()
+    result = client.upload_resource(
+        "七海千秋",
+        filepath,
+        "character_pack",
+        uploader="作者名",
+        description="角色包说明",
+        verified_models=["GPT-Sovits", "Qwen"],
+    )
+    return result
+
+
+def on_open_community_button_clicked():
+    client = make_client()
+    url = client.community_bind_url()
+    webbrowser.open(url)
+    return url
+```
+
+这个最小实现会得到这样的效果：
+
+1. 用户第一次上传时，本地生成 `device_id` 文件。
+2. 服务端为这个设备身份生成固定 `bind_code`。
+3. 上传 payload 会自动携带该 `bind_code`，资源归属仍以当前 Bearer 身份为准。
+4. 用户点击“浏览社区资源页”时，浏览器打开 `https://shinsekai.end0rph1n.icu/resources?bind=XXXXXX`。
+5. 如果网页还没有身份，网站会用 `?bind=` 预绑定到 EXE 同一身份；如果网页已有游客或登录态，网站会 claim 这个 EXE 身份。
+6. 绑定完成后，EXE 上传过的资源会出现在网页“我的资源”里，并可编辑、删除和管理。
+
+### 2. API Key 上传
 
 已有上传 API Key 的作者可以直接使用此模式。它保持旧行为，不会自动携带 `bind_code`。
 
@@ -115,7 +172,7 @@ client.upload_resource(
 )
 ```
 
-### 2. EXE 上传按钮
+### 3. EXE 上传按钮
 
 EXE 推荐在用户点击上传时调用 `from_device_file(...)`。
 
@@ -163,7 +220,7 @@ def on_upload_button_clicked(filepath: str):
 3. 调用 `/auth/device`。
 4. 返回可上传的 `ShinsekaiUploadClient`。
 
-### 3. EXE 首次上传前预绑定
+### 4. EXE 首次上传前预绑定
 
 如果用户已经知道网页账号或主设备的绑定码，可以在 EXE 首次上传时传入 `bind_code`。服务端会把当前 EXE `device_id` 直接挂到该绑定码对应的用户下。
 
@@ -179,7 +236,7 @@ client.upload_resource("七海千秋", "./nanami.char", "character_pack")
 
 此模式下，EXE 上传的资源从一开始就属于绑定码对应的主用户。
 
-### 4. 事后认领并管理游客资源
+### 5. 事后认领并管理游客资源
 
 如果某个游客设备已经上传过资源，当前用户可以用该游客设备显示的绑定码建立共享管理关系。
 
@@ -195,7 +252,7 @@ print(auth.bind_code)
 
 当前网站源码的 claim 语义是共享管理，不是迁移：服务端会在 `user_claims` 里记录“当前用户可管理目标游客资源”的关系，`/api/my-uploads` 会把当前用户自己的资源和已认领游客资源一起返回。目标游客不会失活，目标游客的资源 `user_id` 和 API Key 不会被改到当前用户名下；删除和编辑接口会额外检查 `user_claims`，所以认领方也可以管理这些资源。注意，删除是全局操作，一个认领方删除资源后，原游客和其他认领方列表里也会消失。
 
-### 5. 打开社区资源页自动绑定
+### 6. 打开社区资源页自动绑定
 
 EXE 上传成功后，提供一个“进入社区资源页”按钮：
 
