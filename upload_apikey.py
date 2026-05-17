@@ -4,7 +4,7 @@
 Shinsekai 资源上传示例脚本（API Key 认证）
 
 真正的上传逻辑已经封装在 shinsekai_upload_client.py。
-这个文件只负责填写 API_KEY、UPLOADS，然后调用 client，适合开发者快速测试。
+这个文件只负责填写 API_KEY、UPLOADS，然后调用 client。
 """
 
 import sys
