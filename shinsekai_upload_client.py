@@ -59,6 +59,7 @@ class ShinsekaiUploadClient:
         base_url: str = DEFAULT_API,
         *,
         timeout: int = 60,
+        upload_timeout: int = 600,
         session: requests.Session | None = None,
     ):
         if not api_key:
@@ -66,6 +67,7 @@ class ShinsekaiUploadClient:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.upload_timeout = upload_timeout  # PUT 大文件用的超时，默认 10 分钟
         self.session = session or requests.Session()
 
     def upload_resource(
@@ -90,6 +92,8 @@ class ShinsekaiUploadClient:
 
         filename = os.path.basename(filepath)
         file_size = os.path.getsize(filepath)
+        if file_size == 0:
+            raise ValueError(f"文件为空: {filepath}")
         started_at = time.time()
 
         self._emit(progress, "hashing", "正在计算 SHA-256", 0, file_size)
@@ -121,6 +125,10 @@ class ShinsekaiUploadClient:
             total_parts=total_parts,
         )
 
+        # 当前 session 实际上传的字节数，用于计算均速（排除恢复部分）
+        session_uploaded = 0
+        upload_started_at = time.time()
+
         with open(filepath, "rb") as f:
             for part_number in range(1, total_parts + 1):
                 if part_number in parts:
@@ -143,7 +151,7 @@ class ShinsekaiUploadClient:
                     presign_data["presigned_url"],
                     data=chunk,
                     headers={"Content-Type": "application/octet-stream"},
-                    timeout=self.timeout,
+                    timeout=self.upload_timeout,
                 )
                 elapsed_part = time.time() - part_started_at
                 if not put_resp.ok:
@@ -163,9 +171,10 @@ class ShinsekaiUploadClient:
 
                 parts[part_number] = {"PartNumber": part_number, "ETag": etag}
                 uploaded_bytes += len(chunk)
-                elapsed_total = time.time() - started_at
+                session_uploaded += len(chunk)
+                elapsed_total = time.time() - upload_started_at
                 chunk_speed = len(chunk) / 1024 / 1024 / elapsed_part if elapsed_part > 0 else 0.0
-                avg_speed = uploaded_bytes / 1024 / 1024 / elapsed_total if elapsed_total > 0 else 0.0
+                avg_speed = session_uploaded / 1024 / 1024 / elapsed_total if elapsed_total > 0 else 0.0
                 self._emit(
                     progress,
                     "uploading",
