@@ -146,6 +146,8 @@ class FakeServerSession:
     def get(self, url, headers=None, timeout=None):
         self.gets.append((url, headers or {}))
         self._assert_auth_header(headers or {})
+        if url.endswith("/api/tags"):
+            return FakeResponse(["剧情向", "中文"])
         if url.endswith("/api/my-uploads"):
             return FakeResponse([{"id": 101, "name": "role", "type": "character"}])
         return FakeResponse([{"id": 7, "filename": "pending.char"}])
@@ -399,6 +401,23 @@ def test_character_upload_includes_verified_models(tmp_path):
     assert fake.complete_payload["verified_models"] == ["GPT-Sovits", "Qwen"]
 
 
+def test_upload_includes_user_tags_only_on_complete(tmp_path):
+    fake = FakeServerSession(part_size=8)
+    path = tmp_path / "sample.char"
+    make_file(path, b"0123456789")
+    client = ShinsekaiUploadClient("sk-sn-old", base_url="https://api.test", session=fake)
+
+    client.upload_resource(
+        "role",
+        str(path),
+        "character_pack",
+        tags=["剧情向", " ", "中文", "剧情向", "character_pack", "背景"],
+    )
+
+    assert "tags" not in fake.started_payload
+    assert fake.complete_payload["tags"] == ["剧情向", "中文"]
+
+
 def test_background_upload_rejects_verified_models(tmp_path):
     fake = FakeServerSession()
     path = tmp_path / "sample.bg"
@@ -480,20 +499,23 @@ def test_resource_management_methods():
     client = ShinsekaiUploadClient("sk-sn-old", base_url="https://api.test", session=fake)
 
     uploads = client.list_my_uploads()
+    tags = client.list_tags()
     edited = client.edit_resource(
         101,
         name="new role",
         description="new desc",
-        tags=["tag-a", " ", "tag-b"],
+        tags=["tag-a", " ", "tag-b", "tag-a", "character_pack"],
         verified_models=["GPT-Sovits", "Qwen", "GPT-Sovits"],
         resource_type="character_pack",
     )
     deleted = client.delete_resource(101)
 
     assert uploads[0]["id"] == 101
+    assert tags == ["剧情向", "中文"]
     assert edited["name"] == "new role"
     assert deleted == {"status": "deleted", "id": 101}
     assert fake.gets[0][0].endswith("/api/my-uploads")
+    assert fake.gets[1][0].endswith("/api/tags")
     assert fake.patches[0][0].endswith("/api/resources/101")
     assert fake.patches[0][2] == {
         "name": "new role",

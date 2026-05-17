@@ -100,14 +100,15 @@ def make_client() -> ShinsekaiUploadClient:
 
 
 if __name__ == "__main__":
-    # 格式：(资源名, 文件路径, 资源类型, 上传者展示名, 描述, 已验证模型列表)
+    # 格式：(资源名, 文件路径, 资源类型, 上传者展示名, 描述, 已验证模型列表, 用户标签列表)
     # resource_type: "character_pack"（.char）或 "background_pack"（.bg）
     # verified_models 只给 character_pack 使用，可选值：GPT-Sovits / Genie / MiniMax / Qwen。
+    # tags 是用户自定义标签，会显示在资源卡片和筛选栏里；不要把“角色包/背景包”这类资源类型塞进 tags。
     # background_pack 不允许传模型参数；传了会被 SDK 拒绝，避免背景资源带错模型标签。
     # uploader 只是页面展示字段，真正资源归属由服务端根据 API Key/JWT 决定。
     UPLOADS = [
-        # ("七海千秋", "./nanami.char", "character_pack", "", "角色包说明", ["GPT-Sovits", "Qwen"]),
-        # ("教室背景", "./classroom.bg", "background_pack", "", "背景包说明"),
+        # ("七海千秋", "./nanami.char", "character_pack", "", "角色包说明", ["GPT-Sovits", "Qwen"], ["剧情向", "中文"]),
+        # ("教室背景", "./classroom.bg", "background_pack", "", "背景包说明", None, ["校园"]),
     ]
 
     if not UPLOADS:
@@ -122,6 +123,7 @@ if __name__ == "__main__":
         uploader = item[3] if len(item) > 3 else ""
         description = item[4] if len(item) > 4 else ""
         verified_models = item[5] if len(item) > 5 else None
+        tags = item[6] if len(item) > 6 else None
         print(f"[{name}] {filepath}")
 
         try:
@@ -131,6 +133,7 @@ if __name__ == "__main__":
                 resource_type,
                 uploader=uploader,
                 description=description,
+                tags=tags,
                 verified_models=verified_models,
                 progress=print_progress,
             )

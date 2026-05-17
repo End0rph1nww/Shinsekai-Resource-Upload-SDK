@@ -30,6 +30,7 @@ SDK 封装了 `.char` 角色包与 `.bg` 背景包的上传流程，也封装了
 | 并行分片上传 | `parallel_uploads` 支持顺序或并行上传分片。 |
 | 断点续传 | 服务端返回 `parts_done` 时，SDK 会跳过已完成分片。 |
 | 模型标签 | `verified_models` 只允许用于 `.char` / `character_pack`。 |
+| 用户标签 | `tags` 是用户自定义筛选标签，上传入库时提交，网站通过 `/api/tags` 做自动补全。 |
 
 ## 推荐接入流程
 
@@ -117,6 +118,7 @@ def on_upload_button_clicked(filepath: str):
         "character_pack",
         uploader="作者名",
         description="角色包说明",
+        tags=["弹丸论破"],
         verified_models=["GPT-Sovits", "Qwen"],
     )
     return result
@@ -156,6 +158,7 @@ result = client.upload_resource(
     "character_pack",
     uploader="作者名",
     description="角色包说明",
+    tags=["剧情向", "中文"],
     verified_models=["GPT-Sovits", "Qwen"],
 )
 
@@ -203,6 +206,7 @@ def on_upload_button_clicked(filepath: str):
         "character_pack",
         uploader="作者名",
         description="角色包说明",
+        tags=["剧情向", "中文"],
         verified_models=["GPT-Sovits", "Qwen"],
     )
 
@@ -385,6 +389,7 @@ result = client.upload_resource(
     resource_type,
     uploader="",
     description="",
+    tags=None,
     verified_models=None,
     progress=None,
     parallel_uploads=None,
@@ -398,6 +403,7 @@ result = client.upload_resource(
 | `resource_type` | `str` | 是 | `character_pack` 或 `background_pack`。 |
 | `uploader` | `str` | 否 | 展示字段，不决定资源归属。 |
 | `description` | `str` | 否 | 资源描述。 |
+| `tags` | `list[str] | tuple[str, ...] | None` | 否 | 用户自定义标签，用于资源卡片展示、筛选和 `/api/tags` 自动补全。 |
 | `verified_models` | `list[str] | tuple[str, ...] | None` | 否 | 仅 `character_pack` 可用。 |
 | `progress` | `Callable[[UploadProgress], None] | None` | 否 | 进度回调。 |
 | `parallel_uploads` | `int | None` | 否 | 仅覆盖本次上传并发数。传 `5` 可对齐网站上传器。 |
@@ -417,6 +423,13 @@ result = client.upload_resource(
 
 SDK 会去重并保持顺序。未知模型名会抛出 `ValueError`。
 
+用户标签规则：
+
+- `tags` 只表示作者希望用户看到和筛选的自定义标签，例如 `["剧情向", "中文", "校园"]`。
+- 不要把资源类型当作标签传入。SDK 会过滤 `角色包`、`背景包`、`character_pack`、`background_pack`、`角色卡`、`背景`、`语音` 这些系统/类型词。
+- SDK 会去掉空标签和重复标签，并保持第一次出现的顺序。
+- 当前 Private 新分支中，上传入库时 `tags` 会写入服务端 `user_tags`；`/api/resources`、`/api/my-uploads` 会以 `tags: [...]` 形式返回。
+
 成功返回值由服务端 `/api/resources/multipart/complete` 决定。当前常见结构：
 
 ```json
@@ -425,6 +438,7 @@ SDK 会去重并保持顺序。未知模型名会抛出 `ValueError`。
   "name": "七海千秋",
   "type": "character",
   "uploader": "作者名",
+  "tags": ["剧情向", "中文"],
   "time": "2026-05-18",
   "url": "https://r2.end0rph1n.icu/uploads/character_pack/nanami.char"
 }
@@ -482,6 +496,14 @@ uploads = client.list_my_uploads()
 ```
 
 调用 `/api/my-uploads`，返回当前身份可管理的资源列表。列表包含自己上传的资源，也包含通过绑定码 claim 到的资源。
+
+### `list_tags()`
+
+```python
+tags = client.list_tags()
+```
+
+调用 `GET /api/tags`，返回站内已有的用户自定义标签列表，适合 EXE 输入框做自动补全。这个接口只用于标签建议，不决定资源类型，也不包含 `uploader`、`time`、`verified_models` 等系统字段。
 
 ### `edit_resource(...)`
 
@@ -611,6 +633,7 @@ Content-Type: application/json
 - `bind_code` 只有设备认证客户端会自动携带。
 - `verified_models` 只有 `character_pack` 且参数非空时携带。
 - `background_pack` 不会发送 `verified_models`。
+- `tags` 不在 `multipart/start` 提交；它只在最终入库的 `multipart/complete` 提交。
 
 响应：
 
@@ -757,6 +780,7 @@ POST /api/resources/multipart/complete
   "description": "角色包说明",
   "sha256": "hex sha256",
   "bind_code": "A1B2C3",
+  "tags": ["剧情向", "中文"],
   "verified_models": ["GPT-Sovits", "Qwen"],
   "parts": [
     {"PartNumber": 1, "ETag": "\"etag-value\""}
@@ -786,8 +810,8 @@ CLAIM_BIND_CODE = ""
 PARALLEL_UPLOADS = 5
 
 UPLOADS = [
-    ("七海千秋", "./nanami.char", "character_pack", "作者名", "角色包说明", ["GPT-Sovits", "Qwen"]),
-    ("教室背景", "./classroom.bg", "background_pack", "作者名", "背景包说明"),
+    ("七海千秋", "./nanami.char", "character_pack", "作者名", "角色包说明", ["GPT-Sovits", "Qwen"], ["剧情向", "中文"]),
+    ("教室背景", "./classroom.bg", "background_pack", "作者名", "背景包说明", None, ["校园"]),
 ]
 ```
 
@@ -800,10 +824,10 @@ python -X utf8 upload_apikey.py
 `UPLOADS` 每项格式：
 
 ```python
-(name, filepath, resource_type, uploader, description, verified_models)
+(name, filepath, resource_type, uploader, description, verified_models, tags)
 ```
 
-`verified_models` 是可选的第六项，且只能用于 `character_pack`。
+`verified_models` 是可选的第六项，且只能用于 `character_pack`。`tags` 是可选的第七项，用于提交用户自定义标签；背景包如果要传标签，可以把第六项写成 `None`，第七项写标签列表。
 
 ## 测试
 
@@ -813,7 +837,7 @@ python -X utf8 upload_apikey.py
 python -m pytest tests -q
 ```
 
-当前离线测试数量：`34`；另有 `8` 个线上冒烟测试和 `14` 个破坏性全量线上测试默认跳过。完整测试矩阵与线上启动方式见 [TESTCASES.md](TESTCASES.md)。
+当前离线测试数量：`35`；另有 `8` 个线上冒烟测试和 `14` 个破坏性全量线上测试默认跳过。完整测试矩阵与线上启动方式见 [TESTCASES.md](TESTCASES.md)。
 
 ### SDK 行为测试
 
@@ -829,12 +853,13 @@ python -m pytest tests -q
 | `test_sequential_upload_full_chain` | 顺序 multipart 上传全链路。 |
 | `test_device_upload_includes_bind_code_metadata` | 设备模式上传自动携带 `bind_code`。 |
 | `test_character_upload_includes_verified_models` | `.char` 上传携带模型标签并去重。 |
+| `test_upload_includes_user_tags_only_on_complete` | 上传时 `tags` 只在入库阶段提交，过滤空值、重复值和系统类型词。 |
 | `test_background_upload_rejects_verified_models` | `.bg` 禁止模型标签。 |
 | `test_rejects_unknown_verified_model` | 未知模型名拒绝上传。 |
 | `test_parallel_upload_full_chain` | 并行分片上传。 |
 | `test_resume_upload_skips_finished_parts` | 断点续传跳过已完成分片。 |
 | `test_pending_list_and_delete` | 查询和删除 pending 上传。 |
-| `test_resource_management_methods` | 查询我的资源、编辑资源、删除资源，以及模型参数校验。 |
+| `test_resource_management_methods` | 查询我的资源、读取标签建议、编辑资源、删除资源，以及模型参数校验。 |
 | `test_error_paths` | HTTP、JSON、PUT、ETag 等错误路径。 |
 | `test_upload_apikey_module_import` | 批量脚本可导入。 |
 

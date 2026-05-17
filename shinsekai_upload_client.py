@@ -38,6 +38,15 @@ DEFAULT_API = "https://api.end0rph1n.icu"
 DEFAULT_WEB = "https://shinsekai.end0rph1n.icu"
 DEFAULT_PART_SIZE = 20 * 1024 * 1024
 VERIFIED_MODELS = ("GPT-Sovits", "Genie", "MiniMax", "Qwen")
+SYSTEM_TAGS = {
+    "角色包",
+    "背景包",
+    "character_pack",
+    "background_pack",
+    "角色卡",
+    "背景",
+    "语音",
+}
 
 
 class ShinsekaiUploadError(RuntimeError):
@@ -371,6 +380,7 @@ class ShinsekaiUploadClient:
         *,
         uploader: str = "",
         description: str = "",
+        tags: list[str] | tuple[str, ...] | None = None,
         verified_models: list[str] | tuple[str, ...] | None = None,
         progress: ProgressCallback | None = None,
         parallel_uploads: int | None = None,
@@ -386,6 +396,7 @@ class ShinsekaiUploadClient:
         不再承担绑定码或资源归属同步职责。
         """
         normalized_models = self._normalize_verified_models(verified_models, resource_type)
+        normalized_tags = self._normalize_tags(tags)
         if not os.path.isfile(filepath):
             raise FileNotFoundError(filepath)
 
@@ -479,6 +490,8 @@ class ShinsekaiUploadClient:
         }
         if upload_bind_code:
             complete_payload["bind_code"] = upload_bind_code
+        if normalized_tags:
+            complete_payload["tags"] = normalized_tags
         if normalized_models:
             complete_payload["verified_models"] = normalized_models
 
@@ -505,6 +518,18 @@ class ShinsekaiUploadClient:
         if not isinstance(data, list):
             raise ShinsekaiUploadError("查询我的资源失败：响应格式无效")
         return data
+
+    def list_tags(self) -> list[str]:
+        """
+        列出站内已有的用户标签，供 EXE 或批量工具做自动补全。
+
+        对应网站新分支的 GET /api/tags。服务端只返回用户自定义标签，不返回 uploader、time、
+        verified_models 等系统字段。
+        """
+        data = self._get_json("/api/tags", "查询资源标签")
+        if not isinstance(data, list):
+            raise ShinsekaiUploadError("查询资源标签失败：响应格式无效")
+        return [str(tag).strip() for tag in data if str(tag).strip()]
 
     def delete_resource(self, resource_id: int) -> dict:
         """
@@ -543,7 +568,7 @@ class ShinsekaiUploadClient:
         if description is not None:
             payload["description"] = str(description).strip()
         if tags is not None:
-            payload["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+            payload["tags"] = self._normalize_tags(tags)
         if verified_models is not None:
             normalized_type = self._normalize_resource_type_for_models(resource_type)
             payload["verified_models"] = self._normalize_verified_models(verified_models, normalized_type)
@@ -599,6 +624,25 @@ class ShinsekaiUploadClient:
                 continue
             if value not in allowed:
                 raise ValueError(f"不支持的 verified_models 项: {value}")
+            if value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @staticmethod
+    def _normalize_tags(tags: list[str] | tuple[str, ...] | None) -> list[str]:
+        """
+        标准化用户自定义标签。
+
+        网站新分支会把上传时传入的 tags 存到 user_tags；类型标签、系统字段和空值不应该由
+        SDK 当作用户标签提交。这里和前端/后端保持同一套过滤语义，并保留调用方传入顺序。
+        """
+        if not tags:
+            return []
+        normalized: list[str] = []
+        for tag in tags:
+            value = str(tag).strip()
+            if not value or value in SYSTEM_TAGS:
+                continue
             if value not in normalized:
                 normalized.append(value)
         return normalized

@@ -6,7 +6,7 @@
 
 EXE 用户点击上传按钮时，SDK 不在本地生成六位绑定码。SDK 只生成并长期保存稳定的 `device_id` 文件，然后调用 `/auth/device`。服务端用这个 `device_id` 创建或找回 `role=device` 游客身份，并返回固定的 `bind_code`。同一个 `device_id` 之后再次认证时，应拿到同一个 `bind_code`；如果服务端不再返回明文 API Key，SDK 会使用 `access_token` 继续上传。
 
-上传文件走 `multipart/start -> multipart/presign -> PUT R2 -> multipart/report-part -> multipart/complete`。SDK 会在设备认证模式下把当前 `bind_code` 放进 `multipart/start` 和 `multipart/complete` 的 JSON 里，便于服务端后续校验或审计。按当前网站源码，资源归属仍由 Bearer 认证身份决定，`bind_code` 暂时不写进 `.char` / `.bg` 文件本体，也不参与当前入库归属判断。
+上传文件走 `multipart/start -> multipart/presign -> PUT R2 -> multipart/report-part -> multipart/complete`。SDK 会在设备认证模式下把当前 `bind_code` 放进 `multipart/start` 和 `multipart/complete` 的 JSON 里，便于服务端后续校验或审计。按当前网站源码，资源归属仍由 Bearer 认证身份决定，`bind_code` 暂时不写进 `.char` / `.bg` 文件本体，也不参与当前入库归属判断。Private 新分支在入库阶段支持 `tags`，SDK 会在 `multipart/complete` 里提交用户自定义标签，并过滤空标签、重复标签和系统类型词。
 
 EXE 的“进入社区资源页”按钮应使用 `client.community_bind_url(...)` 生成 `/resources?bind=XXXXXX`。网站前端读取 `?bind=` 后，如果当前浏览器已有 `access_token` 或 `device_api_key`，会调用 `/auth/device/claim` 建立共享管理关系；如果浏览器还没有身份，则调用 `/auth/device` 携带 `bind_code` 做预绑定。两条路径都应让用户在网页端看到并管理 EXE 已上传资源；区别是 claim 不改资源原归属，预绑定会让网页直接成为 EXE 同一身份。
 
@@ -21,6 +21,7 @@ EXE 的“进入社区资源页”按钮应使用 `client.community_bind_url(...
 | URL 自动绑定 | `/resources?bind=XXXXXX` 有 token 时走 claim，无 token 时走预绑定；claim 后可编辑删除已认领资源 | `community_bind_url(...)` / `build_bind_url(...)` / `edit_resource(...)` / `delete_resource(...)` |
 | 上传并行 | 网站分片上传固定 `CONC = 5`，每批 `Promise.all` | SDK `parallel_uploads=5` 用 `ThreadPoolExecutor` |
 | 模型参数 | `verified_models` 只对 `character_pack` 有意义 | SDK 只允许 `.char` 传模型参数，`.bg` 直接拒绝 |
+| 用户标签 | `/api/resources/confirm` 和 `/api/resources/multipart/complete` 接收 `tags`；`/api/tags` 返回已有用户标签 | SDK `upload_resource(tags=...)` 只在入库阶段提交标签，`list_tags()` 读取自动补全建议 |
 
 ## 离线 pytest 覆盖矩阵
 
@@ -42,11 +43,12 @@ python -m pytest tests -q
 | 上传链路 | `test_sequential_upload_full_chain` | start、presign、PUT、report、complete |
 | 绑定元数据 | `test_device_upload_includes_bind_code_metadata` | 设备上传 payload 自动携带 `bind_code` |
 | 模型参数 | `test_character_upload_includes_verified_models` | `.char` 携带模型参数并去重 |
+| 用户标签 | `test_upload_includes_user_tags_only_on_complete` | 上传标签只在 complete 提交，过滤空值、重复值和系统类型词 |
 | 模型限制 | `test_background_upload_rejects_verified_models` | `.bg` 禁止传模型参数 |
 | 并行上传 | `test_parallel_upload_full_chain` | 多分片并发上传、结果排序 |
 | 断点续传 | `test_resume_upload_skips_finished_parts` | 跳过 `parts_done`，合并完整 parts |
 | Pending 管理 | `test_pending_list_and_delete` | list/delete pending 接口 |
-| 资源管理 | `test_resource_management_methods` | `/api/my-uploads`、资源编辑、资源删除 |
+| 资源管理 | `test_resource_management_methods` | `/api/my-uploads`、`/api/tags`、资源编辑、资源删除 |
 | 错误路径 | `test_error_paths` | HTTP、JSON、PUT、ETag、空文件等异常 |
 
 ## 绑定业务场景
