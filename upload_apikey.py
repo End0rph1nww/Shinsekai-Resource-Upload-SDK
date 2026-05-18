@@ -25,7 +25,6 @@ API_KEY = "sk-sn-your_key"
 USE_DEVICE_AUTH = False
 DEVICE_ID_FILE = "./shinsekai_device_id.txt"
 DEVICE_ID = ""          # 如果不想用文件，也可以直接填稳定 UUID。
-DEVICE_FINGERPRINT = "" # 可选：浏览器/宿主采集的稳定设备指纹；SDK 会按网站逻辑归一化为 64 位 SHA-256 hex。
 
 # 预绑定：EXE 首次启动时，如果用户已经知道网页/其他设备的绑定码，填这里。
 # SDK 会把它随 /auth/device 一起提交，服务端直接把本机 device_id 挂到主用户下面。
@@ -57,7 +56,6 @@ def make_client() -> ShinsekaiUploadClient:
         if DEVICE_ID:
             client = ShinsekaiUploadClient.from_device(
                 device_id=DEVICE_ID,
-                fingerprint=DEVICE_FINGERPRINT or None,
                 bind_code=PREBIND_CODE or None,
                 base_url=API,
                 parallel_uploads=PARALLEL_UPLOADS,
@@ -65,7 +63,6 @@ def make_client() -> ShinsekaiUploadClient:
         else:
             client = ShinsekaiUploadClient.from_device_file(
                 DEVICE_ID_FILE,
-                fingerprint=DEVICE_FINGERPRINT or None,
                 bind_code=PREBIND_CODE or None,
                 base_url=API,
                 parallel_uploads=PARALLEL_UPLOADS,

@@ -190,12 +190,8 @@ class FakeServerSession:
     def _assert_device_auth_payload(payload):
         if not payload.get("device_id"):
             raise AssertionError("device_id is required")
-        fingerprint = payload.get("fingerprint")
-        if fingerprint:
-            if len(fingerprint) != 64:
-                raise AssertionError("fingerprint should match browser SHA-256 hex format")
-            if any(ch not in "0123456789abcdef" for ch in fingerprint):
-                raise AssertionError("fingerprint should be lowercase hex")
+        if "fingerprint" in payload:
+            raise AssertionError("SDK should not send fingerprint in the simplified device auth flow")
 
     @staticmethod
     def assert_payload_code(payload, expected):
@@ -216,10 +212,6 @@ def test_validation_and_helpers():
         ShinsekaiUploadClient("sk").upload_resource("n", __file__ + ".missing", "character_pack")
 
     assert ShinsekaiUploadClient.normalize_bind_code(" ab12cd ") == "AB12CD"
-    assert ShinsekaiUploadClient.normalize_fingerprint(None) == ""
-    assert ShinsekaiUploadClient.normalize_fingerprint(" fp ") == hashlib.sha256(b"fp").hexdigest()
-    digest = hashlib.sha256(b"raw").hexdigest()
-    assert ShinsekaiUploadClient.normalize_fingerprint(digest.upper()) == digest
     assert ShinsekaiUploadClient("sk").bind_code == ""
     assert (
         ShinsekaiUploadClient.build_bind_url(" ab12cd ", web_url="https://web.test", path="/resources?tab=mine")
@@ -250,7 +242,6 @@ def test_device_auth_from_device_and_file(tmp_path):
     fake = FakeServerSession()
     client = ShinsekaiUploadClient.from_device(
         device_id=" device-1 ",
-        fingerprint=" fp ",
         base_url="https://api.test/",
         parallel_uploads=2,
         session=fake,
@@ -260,10 +251,7 @@ def test_device_auth_from_device_and_file(tmp_path):
     assert client.bind_code == "EXE123"
     assert client.community_bind_url(web_url="https://web.test") == "https://web.test/resources?bind=EXE123"
     assert client.parallel_uploads == 2
-    assert fake.posts[0][2] == {
-        "device_id": "device-1",
-        "fingerprint": hashlib.sha256(b"fp").hexdigest(),
-    }
+    assert fake.posts[0][2] == {"device_id": "device-1"}
 
     path = tmp_path / "device.txt"
     client2 = ShinsekaiUploadClient.from_device_file(str(path), base_url="https://api.test", session=FakeServerSession())
@@ -294,12 +282,11 @@ def test_device_auth_prebind(tmp_path):
     client = ShinsekaiUploadClient.from_device_file(
         str(tmp_path / "device.txt"),
         bind_code=" a1b2c3 ",
-        fingerprint="gpu|8|win32",
         base_url="https://api.test",
         session=fake,
     )
     assert fake.posts[0][2]["bind_code"] == "A1B2C3"
-    assert fake.posts[0][2]["fingerprint"] == hashlib.sha256(b"gpu|8|win32").hexdigest()
+    assert "fingerprint" not in fake.posts[0][2]
     assert client.api_key == "sk-sn-master"
     assert client.bind_code == "A1B2C3"
     assert client.device_auth.is_guest is False

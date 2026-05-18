@@ -139,7 +139,6 @@ class ShinsekaiUploadClient:
         cls,
         *,
         device_id: str | None = None,
-        fingerprint: str | None = None,
         bind_code: str | None = None,
         base_url: str = DEFAULT_API,
         timeout: int = 60,
@@ -158,15 +157,11 @@ class ShinsekaiUploadClient:
         bind_code 是预绑定入口：用户首次启动 EXE 时如果已经知道网页或其他设备
         的绑定码，就把它一起传给 /auth/device，服务端会直接把这个 device_id
         挂到绑定码所属用户下面，不再先创建独立游客。
-
-        fingerprint 与网站保持同一格式：如果传入的不是 64 位 SHA-256 hex，SDK
-        会先对原始指纹字符串做 SHA-256，再提交给 /auth/device。
         """
         stable_device_id = (device_id or str(uuid.uuid4())).strip()
         http = session or requests.Session()
         auth = cls.authenticate_device(
             device_id=stable_device_id,
-            fingerprint=fingerprint,
             bind_code=bind_code,
             base_url=base_url,
             timeout=timeout,
@@ -189,7 +184,6 @@ class ShinsekaiUploadClient:
         cls,
         device_id_path: str,
         *,
-        fingerprint: str | None = None,
         bind_code: str | None = None,
         base_url: str = DEFAULT_API,
         timeout: int = 60,
@@ -201,7 +195,6 @@ class ShinsekaiUploadClient:
         device_id = cls.load_or_create_device_id(device_id_path)
         return cls.from_device(
             device_id=device_id,
-            fingerprint=fingerprint,
             bind_code=bind_code,
             base_url=base_url,
             timeout=timeout,
@@ -246,7 +239,6 @@ class ShinsekaiUploadClient:
         cls,
         *,
         device_id: str,
-        fingerprint: str | None = None,
         bind_code: str | None = None,
         base_url: str = DEFAULT_API,
         timeout: int = 60,
@@ -260,9 +252,6 @@ class ShinsekaiUploadClient:
             raise ValueError("device_id 长度不能超过 64 个字符")
 
         payload = {"device_id": device_id}
-        normalized_fingerprint = cls.normalize_fingerprint(fingerprint)
-        if normalized_fingerprint:
-            payload["fingerprint"] = normalized_fingerprint
         normalized_code = cls.normalize_bind_code(bind_code)
         if normalized_code:
             payload["bind_code"] = normalized_code
@@ -583,23 +572,6 @@ class ShinsekaiUploadClient:
     def normalize_bind_code(bind_code: str | None) -> str:
         """标准化服务端用户绑定码，便于 EXE 输入框直接传入。"""
         return (bind_code or "").strip().upper()
-
-    @staticmethod
-    def normalize_fingerprint(fingerprint: str | None) -> str:
-        """
-        标准化设备指纹，保持和网站前端一致。
-
-        网站会把 WebGL GPU、CPU 核心数、平台、时区拼成原始字符串，再在浏览器端
-        SHA-256 成 64 位 hex 后提交给 /auth/device。SDK 允许宿主直接传原始字符串；
-        如果传入值已经是 64 位 hex，则只转小写，不再重复哈希。
-        """
-        value = (fingerprint or "").strip()
-        if not value:
-            return ""
-        is_sha256_hex = len(value) == 64 and all(ch in "0123456789abcdefABCDEF" for ch in value)
-        if is_sha256_hex:
-            return value.lower()
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _normalize_verified_models(

@@ -32,14 +32,11 @@ def full_device_client(
     tmp_path: Path,
     prefix: str,
     *,
-    fingerprint: str | None = None,
     bind_code: str | None = None,
     parallel_uploads: int = 5,
 ) -> ShinsekaiUploadClient:
-    raw_fingerprint = fingerprint or f"{prefix}|ANGLE RTX 4070|16|Win32|-540|{uuid.uuid4().hex}"
     return ShinsekaiUploadClient.from_device_file(
         str(tmp_path / f"{prefix}_device_id.txt"),
-        fingerprint=raw_fingerprint,
         bind_code=bind_code,
         base_url=BASE_URL,
         parallel_uploads=parallel_uploads,
@@ -145,19 +142,18 @@ def test_online_full_q1_browser_guest_upload_then_exe_prebind_syncs(tmp_path: Pa
         cleanup_resources(browser, created)
 
 
-def test_online_full_q2_same_fingerprint_recovers_guest_identity(tmp_path: Path):
+def test_online_full_q2_new_device_without_bind_is_separate_identity(tmp_path: Path):
     require_full_online()
     created: list[int] = []
-    shared_fingerprint = f"full-q2-shared|ANGLE RTX 4070|16|Win32|-540|{uuid.uuid4().hex}"
-    browser_a = full_device_client(tmp_path, "full_q2_browser_a", fingerprint=shared_fingerprint)
+    browser_a = full_device_client(tmp_path, "full_q2_browser_a")
 
     try:
         uploaded = upload_char(browser_a, tmp_path, "full_q2_browser_a", created)
-        browser_b = full_device_client(tmp_path, "full_q2_browser_b", fingerprint=shared_fingerprint)
+        browser_b = full_device_client(tmp_path, "full_q2_browser_b")
         ids = {item["id"] for item in fetch_my_uploads(browser_b)}
 
-        assert browser_b.bind_code == browser_a.bind_code
-        assert uploaded["id"] in ids
+        assert browser_b.bind_code != browser_a.bind_code
+        assert uploaded["id"] not in ids
     finally:
         cleanup_resources(browser_a, created)
 

@@ -62,7 +62,7 @@ flowchart TD
 
 - `device_id` 是 EXE 本地保存的稳定 UUID。
 - `bind_code` 是服务端返回的六位绑定码，不要在 EXE 本地生成。
-- `fingerprint` 与网站保持一致：网站前端会把 GPU、CPU 核心数、平台、时区拼成原始字符串后先做 SHA-256，再把 64 位 hex 提交给 `/auth/device`。SDK 也会自动把非 64 位 hex 的原始指纹归一化成同样格式。
+- SDK 不采集也不提交系统指纹。网站新流程同样以浏览器本地 `device_id` 为主，跨端同步交给 `bind_code`。
 - 上传归属由 `Authorization` 里的 API Key 或 JWT 决定。
 - SDK 会在设备模式上传时自动携带 `bind_code` 到上传 payload，供服务端未来校验或审计；当前网站源码的资源归属仍以 Bearer 认证身份为准，删除和编辑权限允许资源原作者或已 claim 该作者身份的用户。
 - 如果 `/auth/device` 返回 `api_key: ""`，SDK 会自动改用 `access_token` 上传。
@@ -105,7 +105,6 @@ def make_client() -> ShinsekaiUploadClient:
     # 在用户点击上传或点击进入社区时调用都可以；SDK 会复用同一个 device_id 文件。
     return ShinsekaiUploadClient.from_device_file(
         shinsekai_device_file(),
-        fingerprint=ShinsekaiUploadClient.normalize_fingerprint("gpu-renderer|8|win32|-540"),
         parallel_uploads=5,
     )
 
@@ -196,7 +195,6 @@ def shinsekai_device_file() -> str:
 def on_upload_button_clicked(filepath: str):
     client = ShinsekaiUploadClient.from_device_file(
         shinsekai_device_file(),
-        fingerprint=ShinsekaiUploadClient.normalize_fingerprint("gpu-renderer|8|win32|-540"),
         parallel_uploads=5,
     )
 
@@ -283,7 +281,7 @@ https://shinsekai.example.com/resources?bind=A1B2C3
 
 | 入口 | SDK / 网站动作 | 认证方式 | 说明 |
 |---|---|---|---|
-| 网页游客 | 网站自动调用 `/auth/device` | API Key 或 JWT | 浏览器生成 UUID，并可带指纹找回游客身份。 |
+| 网页游客 | 网站自动调用 `/auth/device` | API Key 或 JWT | 浏览器在 localStorage 保存 UUID，重启浏览器后继续复用。 |
 | EXE 游客 | SDK 调用 `from_device_file(...)` | API Key 或 JWT | EXE 保存稳定 `device_id` 文件，适合上传按钮触发。 |
 | 注册用户 | 网站 `/auth/register` 创建或升级身份，随后 `/auth/login` 获取登录态 | JWT；如需程序化调用，可登录后通过 `/keys` 创建 API Key | 如果带同设备游客，会升级游客并保留资源。 |
 
@@ -355,7 +353,6 @@ client = ShinsekaiUploadClient(
 ```python
 client = ShinsekaiUploadClient.from_device_file(
     device_id_path="./shinsekai_device_id.txt",
-    fingerprint=None,
     bind_code=None,
     base_url="https://api.example.com",
     parallel_uploads=1,
@@ -371,14 +368,13 @@ client = ShinsekaiUploadClient.from_device_file(
 ```python
 client = ShinsekaiUploadClient.from_device(
     device_id="stable-device-uuid",
-    fingerprint=ShinsekaiUploadClient.normalize_fingerprint("gpu-renderer|8|win32|-540"),
     bind_code=None,
 )
 ```
 
 适合宿主程序自己管理 `device_id` 的场景。
 
-`fingerprint` 可以传 64 位 SHA-256 hex，也可以传原始指纹字符串。SDK 会用 `normalize_fingerprint(...)` 归一化，避免超过后端 `max_length=64`，也保证 EXE 和网页端用同一套指纹格式匹配游客身份。
+正式接入时请传入稳定保存的 UUID。不要用硬件信息、系统指纹或机器码生成 `device_id`，也不要把同一个默认 `device_id` 打包进安装包。
 
 ### `upload_resource(...)`
 
@@ -470,16 +466,6 @@ url = ShinsekaiUploadClient.build_bind_url(
 ```text
 https://shinsekai.example.com/resources?tab=mine&bind=A1B2C3
 ```
-
-### `normalize_fingerprint(...)`
-
-```python
-fingerprint = ShinsekaiUploadClient.normalize_fingerprint(
-    "gpu-renderer|8|win32|-540"
-)
-```
-
-返回 64 位小写 SHA-256 hex。网站前端也是先把原始设备特征做 SHA-256，再提交给 `/auth/device`；EXE 如果希望和网页游客通过同一指纹找回身份，应使用同样的原始字段顺序和归一化结果。
 
 ### `claim_bind_code(...)`
 
@@ -870,8 +856,7 @@ python -m pytest tests -q
 | 用例 | 覆盖点 |
 |---|---|
 | `test_q1_browser_guest_upload_then_exe_prebind_syncs_files` | 浏览器游客上传后，EXE 用浏览器绑定码预绑定，双向可见。 |
-| `test_q2_new_browser_with_same_fingerprint_recovers_guest_identity` | 换浏览器但指纹相同，找回游客身份和文件。 |
-| `test_q2_sdk_raw_fingerprint_matches_browser_hashed_fingerprint` | SDK 原始指纹规整后与浏览器哈希指纹命中同一身份。 |
+| `test_q2_new_browser_without_bind_gets_separate_identity` | 新浏览器没有原 `device_id` 和 `bind_code` 时会得到独立身份。 |
 | `test_q3_register_keeps_bind_code_and_old_guest_key` | 游客注册后绑定码不变，旧游客 API Key 仍可用。 |
 | `test_q4_exe_first_upload_then_community_url_auto_binds_browser` | EXE 先上传，浏览器无身份时通过 `/resources?bind=` 预绑定到同一身份。 |
 | `test_q4_existing_browser_guest_opens_exe_bind_url_claims_exe_files` | 已有浏览器游客打开 EXE 的 `?bind=` 时走 claim，共享管理 EXE 资源。 |

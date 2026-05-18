@@ -14,10 +14,9 @@ EXE 的“进入社区资源页”按钮应使用 `client.community_bind_url(...
 
 | 功能点 | 源码行为 | SDK 对应 |
 |---|---|---|
-| 设备入口 | `/auth/device` 先处理有效 `bind_code`，再按 `device_id`、`user_devices`、`fingerprint_hash` 查找，否则创建游客 | `from_device(...)` / `from_device_file(...)` |
+| 设备入口 | `/auth/device` 先处理有效 `bind_code`，再按 `device_id`、`user_devices` 查找。旧指纹字段即使后端兼容，也不作为 SDK 接入路径 | `from_device(...)` / `from_device_file(...)` |
 | 绑定码来源 | 服务端为没有 `bind_code` 的用户生成 6 位码 | `client.bind_code` 只读取服务端返回值 |
 | API Key 复用 | 已有 `device-key` 时 `/auth/device` 可能返回空 `api_key`，但仍返回 `access_token` | SDK 允许 `api_key=""`，上传时用可用 token |
-| 指纹同步 | 前端先 SHA-256 原始 WebGL 指纹，后端再对收到值 SHA-256 入库 | SDK 对原始 EXE 指纹先规整为 64 位 hex |
 | URL 自动绑定 | `/resources?bind=XXXXXX` 有 token 时走 claim，无 token 时走预绑定；claim 后可编辑删除已认领资源 | `community_bind_url(...)` / `build_bind_url(...)` / `edit_resource(...)` / `delete_resource(...)` |
 | 上传并行 | 网站分片上传固定 `CONC = 5`，每批 `Promise.all` | SDK `parallel_uploads=5` 用 `ThreadPoolExecutor` |
 | 模型参数 | `verified_models` 只对 `character_pack` 有意义 | SDK 只允许 `.char` 传模型参数，`.bg` 直接拒绝 |
@@ -33,7 +32,7 @@ python -m pytest tests -q
 
 | 分类 | 用例 | 覆盖点 |
 |---|---|---|
-| SDK 参数 | `test_validation_and_helpers` | API Key、并发数、文件路径、绑定 URL、指纹标准化、进度百分比 |
+| SDK 参数 | `test_validation_and_helpers` | API Key、并发数、文件路径、绑定 URL、进度百分比 |
 | 设备文件 | `test_device_id_file_create_and_reuse` | `device_id` 文件首次创建和复用 |
 | 设备认证 | `test_device_auth_from_device_and_file` | 普通 `/auth/device`，返回 `bind_code` |
 | Token 兼容 | `test_device_auth_without_api_key_uses_access_token_for_upload` | 空 `api_key` 时用 `access_token` 上传 |
@@ -56,8 +55,7 @@ python -m pytest tests -q
 | 编号 | 用例 | 预期 |
 |---|---|---|
 | Q1 | 浏览器游客上传 -> EXE 用浏览器 `bind_code` 预绑定 -> EXE 上传 | 两边 `my_uploads` 都能看到浏览器和 EXE 文件 |
-| Q2 | 浏览器 A 上传 -> 浏览器 B 同指纹认证 | 找回同一游客身份，`bind_code` 和文件都一致 |
-| Q2b | 浏览器发 hash 指纹，EXE 发原始指纹经 SDK 规整 | 两边命中同一后端 `fingerprint_hash` |
+| Q2 | 浏览器 A 上传 -> 浏览器 B 没有原 `device_id`，也没有 `bind_code` | 浏览器 B 得到独立游客身份，看不到 A 的文件 |
 | Q3 | 游客注册成正式用户 | `bind_code` 不变，旧游客 API Key 仍可用，文件不丢 |
 | Q4 | EXE 首传 -> 打开 `/resources?bind=EXE码`，浏览器无身份 | 网页预绑定到 EXE 游客，看到 EXE 文件 |
 | Q4b | EXE 首传 -> 已有浏览器游客打开 `/resources?bind=EXE码` | 网页走 claim，当前浏览器可见并可编辑/删除 EXE 文件，但资源原归属仍是 EXE 身份 |
@@ -130,7 +128,7 @@ python -m pytest tests/test_online_full.py -q -s
 | 用例 | 覆盖点 |
 |---|---|
 | `test_online_full_q1_browser_guest_upload_then_exe_prebind_syncs` | 浏览器游客上传后，EXE 用浏览器绑定码预绑定并同步资源。 |
-| `test_online_full_q2_same_fingerprint_recovers_guest_identity` | 不同 `device_id` 但相同指纹时找回同一游客身份。 |
+| `test_online_full_q2_new_device_without_bind_is_separate_identity` | 不同 `device_id` 且没有 `bind_code` 时创建独立游客身份。 |
 | `test_online_full_q3_register_keeps_bind_code_and_guest_token_uploads` | 游客注册升级后绑定码保持不变，旧游客 token 继续上传且资源归同一用户。 |
 | `test_online_full_q4_exe_first_upload_then_web_prebind_syncs` | EXE 先上传，网页无身份时用 `?bind=` 预绑定并看到 EXE 文件。 |
 | `test_online_full_q4_existing_browser_claims_exe_bind_code` | 已有浏览器游客用 EXE 绑定码 claim，网页可见并可管理双方资源，资源原归属不变。 |

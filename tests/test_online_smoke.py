@@ -51,10 +51,8 @@ def device_client(
     bind_code: str | None = None,
     parallel_uploads: int = 5,
 ) -> ShinsekaiUploadClient:
-    fingerprint = f"{prefix}|ANGLE RTX 4070|16|Win32|-540|{uuid.uuid4().hex}"
     return ShinsekaiUploadClient.from_device_file(
         str(tmp_path / f"{prefix}_device_id.txt"),
-        fingerprint=fingerprint,
         bind_code=bind_code,
         base_url=BASE_URL,
         parallel_uploads=parallel_uploads,
@@ -93,7 +91,6 @@ def test_online_device_bind_code_stable_across_reauth(tmp_path: Path):
     client1 = device_client(tmp_path, "stable")
     client2 = ShinsekaiUploadClient.from_device_file(
         str(tmp_path / "stable_device_id.txt"),
-        fingerprint="stable|ANGLE RTX 4070|16|Win32|-540",
         base_url=BASE_URL,
     )
 
