@@ -13,13 +13,15 @@ from shinsekai_upload_client import DEFAULT_PART_SIZE, ShinsekaiUploadClient
 
 pytestmark = pytest.mark.online
 
-BASE_URL = os.getenv("SHINSEKAI_BASE_URL", "https://api.end0rph1n.icu").rstrip("/")
-WEB_URL = os.getenv("SHINSEKAI_WEB_URL", "https://shinsekai.end0rph1n.icu").rstrip("/")
+BASE_URL = os.getenv("SHINSEKAI_BASE_URL", "").rstrip("/")
+WEB_URL = os.getenv("SHINSEKAI_WEB_URL", "").rstrip("/")
 
 
 def require_online() -> None:
     if os.getenv("SHINSEKAI_ONLINE_TEST") != "1":
         pytest.skip("set SHINSEKAI_ONLINE_TEST=1 to run live online smoke tests")
+    if not BASE_URL or not WEB_URL:
+        pytest.skip("set SHINSEKAI_BASE_URL and SHINSEKAI_WEB_URL before running online tests")
 
 
 def unique_name(prefix: str) -> str:

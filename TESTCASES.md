@@ -80,12 +80,12 @@ python -m pytest tests -q
 python -m pytest tests/test_online_smoke.py -q
 ```
 
-启动线上冒烟测试：
+启动线上冒烟测试前，先复制 example 并在本地填写真实测试环境：
 
 ```powershell
-$env:SHINSEKAI_ONLINE_TEST = "1"
-$env:SHINSEKAI_BASE_URL = "https://api.end0rph1n.icu"
-$env:SHINSEKAI_WEB_URL = "https://shinsekai.end0rph1n.icu"
+Copy-Item .online_env.example.ps1 .online_env.ps1
+notepad .online_env.ps1
+. .\.online_env.ps1
 python -m pytest tests/test_online_smoke.py -q -s
 ```
 
@@ -158,8 +158,8 @@ python -m pytest tests/test_online_full.py -q -s
 
 线上基础测试需要配置以下环境变量：
 
-- `SHINSEKAI_BASE_URL`：API 域名，默认 `https://api.end0rph1n.icu`。
-- `SHINSEKAI_WEB_URL`：社区网页域名，默认 `https://shinsekai.end0rph1n.icu`。
+- `SHINSEKAI_BASE_URL`：API 域名。仓库只提供占位值，真实地址写在本地 `.online_env.ps1`。
+- `SHINSEKAI_WEB_URL`：社区网页域名。仓库只提供占位值，真实地址写在本地 `.online_env.ps1`。
 - `SHINSEKAI_ONLINE_FULL`：设为 `1` 时启用破坏性全量线上测试。
 
 如需覆盖 API Key 旧接入路径，额外配置：

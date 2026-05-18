@@ -136,7 +136,7 @@ def on_open_community_button_clicked():
 1. 用户第一次上传时，本地生成 `device_id` 文件。
 2. 服务端为这个设备身份生成固定 `bind_code`。
 3. 上传 payload 会自动携带该 `bind_code`，资源归属仍以当前 Bearer 身份为准。
-4. 用户点击“浏览社区资源页”时，浏览器打开 `https://shinsekai.end0rph1n.icu/resources?bind=XXXXXX`。
+4. 用户点击“浏览社区资源页”时，浏览器打开 `https://shinsekai.example.com/resources?bind=XXXXXX`。
 5. 如果网页还没有身份，网站会用 `?bind=` 预绑定到 EXE 同一身份；如果网页已有游客或登录态，网站会 claim 这个 EXE 身份。
 6. 绑定完成后，EXE 上传过的资源会出现在网页“我的资源”里，并可编辑、删除和管理。
 
@@ -149,7 +149,7 @@ from shinsekai_upload_client import ShinsekaiUploadClient
 
 client = ShinsekaiUploadClient(
     "sk-sn-your_key",
-    base_url="https://api.end0rph1n.icu",
+    base_url="https://api.example.com",
 )
 
 result = client.upload_resource(
@@ -268,7 +268,7 @@ print(url)
 输出示例：
 
 ```text
-https://shinsekai.end0rph1n.icu/resources?bind=A1B2C3
+https://shinsekai.example.com/resources?bind=A1B2C3
 ```
 
 网页打开后会读取 `?bind=`：
@@ -331,7 +331,7 @@ SDK 的处理规则：
 ```python
 client = ShinsekaiUploadClient(
     api_key="sk-sn-your_key",
-    base_url="https://api.end0rph1n.icu",
+    base_url="https://api.example.com",
     access_token=None,
     timeout=60,
     upload_timeout=600,
@@ -342,7 +342,7 @@ client = ShinsekaiUploadClient(
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---:|---|
 | `api_key` | `str | None` | `None` | 上传 API Key。 |
-| `base_url` | `str` | `https://api.end0rph1n.icu` | API 根地址。 |
+| `base_url` | `str` | `https://api.example.com` | API 根地址。 |
 | `access_token` | `str | None` | `None` | JWT。设备认证二次返回空 API Key 时使用。 |
 | `timeout` | `int` | `60` | 普通 API 请求超时秒数。 |
 | `upload_timeout` | `int` | `600` | R2 PUT 分片上传超时秒数。 |
@@ -357,7 +357,7 @@ client = ShinsekaiUploadClient.from_device_file(
     device_id_path="./shinsekai_device_id.txt",
     fingerprint=None,
     bind_code=None,
-    base_url="https://api.end0rph1n.icu",
+    base_url="https://api.example.com",
     parallel_uploads=1,
 )
 ```
@@ -440,7 +440,7 @@ SDK 会去重并保持顺序。未知模型名会抛出 `ValueError`。
   "uploader": "作者名",
   "tags": ["剧情向", "中文"],
   "time": "2026-05-18",
-  "url": "https://r2.end0rph1n.icu/uploads/character_pack/nanami.char"
+  "url": "https://r2.example.com/uploads/character_pack/nanami.char"
 }
 ```
 
@@ -448,7 +448,7 @@ SDK 会去重并保持顺序。未知模型名会抛出 `ValueError`。
 
 ```python
 url = client.community_bind_url(
-    web_url="https://shinsekai.end0rph1n.icu",
+    web_url="https://shinsekai.example.com",
     path="/resources",
 )
 ```
@@ -460,7 +460,7 @@ url = client.community_bind_url(
 ```python
 url = ShinsekaiUploadClient.build_bind_url(
     "A1B2C3",
-    web_url="https://shinsekai.end0rph1n.icu",
+    web_url="https://shinsekai.example.com",
     path="/resources?tab=mine",
 )
 ```
@@ -468,7 +468,7 @@ url = ShinsekaiUploadClient.build_bind_url(
 返回：
 
 ```text
-https://shinsekai.end0rph1n.icu/resources?tab=mine&bind=A1B2C3
+https://shinsekai.example.com/resources?tab=mine&bind=A1B2C3
 ```
 
 ### `normalize_fingerprint(...)`
@@ -797,7 +797,7 @@ POST /api/resources/multipart/complete
 核心配置：
 
 ```python
-API = "https://api.end0rph1n.icu"
+API = "https://api.example.com"
 
 API_KEY = "sk-sn-your_key"
 USE_DEVICE_AUTH = False
@@ -838,6 +838,8 @@ python -m pytest tests -q
 ```
 
 当前离线测试数量：`35`；另有 `8` 个线上冒烟测试和 `14` 个破坏性全量线上测试默认跳过。完整测试矩阵与线上启动方式见 [TESTCASES.md](TESTCASES.md)。
+
+线上测试需要本地环境脚本。复制 `.online_env.example.ps1` 为 `.online_env.ps1` 后填写真实测试地址和 Key；`.online_env.ps1` 已被忽略，不应提交。
 
 ### SDK 行为测试
 

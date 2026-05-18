@@ -2,6 +2,9 @@
 .online_smoke_state/
 .online_payloads/
 .online_env.ps1
+.env
+*.local.ps1
+upload_single.py
 .pytest_cache/
 __pycache__/
 tests/__pycache__/

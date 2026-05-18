@@ -34,8 +34,8 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 import requests
 
 
-DEFAULT_API = "https://api.end0rph1n.icu"
-DEFAULT_WEB = "https://shinsekai.end0rph1n.icu"
+DEFAULT_API = "https://api.example.com"
+DEFAULT_WEB = "https://shinsekai.example.com"
 DEFAULT_PART_SIZE = 20 * 1024 * 1024
 VERIFIED_MODELS = ("GPT-Sovits", "Genie", "MiniMax", "Qwen")
 SYSTEM_TAGS = {

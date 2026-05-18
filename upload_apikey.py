@@ -16,7 +16,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-API = "https://api.end0rph1n.icu"
+API = "https://api.example.com"
 
 # 旧版 API Key 模式：保持 USE_DEVICE_AUTH = False，然后填写这个值。
 API_KEY = "sk-sn-your_key"
