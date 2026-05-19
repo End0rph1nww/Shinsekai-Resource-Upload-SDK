@@ -6,15 +6,15 @@
 
 EXE 用户点击上传按钮时，SDK 不在本地生成六位绑定码。SDK 只生成并长期保存稳定的 `device_id` 文件，然后调用 `/auth/device`。服务端用这个 `device_id` 创建或找回 `role=device` 游客身份，并返回固定的 `bind_code`。同一个 `device_id` 之后再次认证时，应拿到同一个 `bind_code`；如果服务端不再返回明文 API Key，SDK 会使用 `access_token` 继续上传。
 
-上传文件走 `multipart/start -> multipart/presign -> PUT R2 -> multipart/report-part -> multipart/complete`。SDK 会在设备认证模式下把当前 `bind_code` 放进 `multipart/start` 和 `multipart/complete` 的 JSON 里，便于服务端后续校验或审计。按当前网站源码，资源归属仍由 Bearer 认证身份决定，`bind_code` 暂时不写进 `.char` / `.bg` 文件本体，也不参与当前入库归属判断。Private 新分支在入库阶段支持 `tags`，SDK 会在 `multipart/complete` 里提交用户自定义标签，并过滤空标签、重复标签和系统类型词。
+上传文件走 `multipart/start -> multipart/presign -> PUT R2 -> multipart/report-part -> multipart/complete`。SDK 会在设备认证模式下把当前 `bind_code` 放进 `multipart/start` 和 `multipart/complete` 的 JSON 里，便于服务端做归属解析和审计。当前网站源码会结合 Bearer 认证身份、上传 key 和 `user_claims` 预绑定关系决定最终 owner；`bind_code` 不写进 `.char` / `.bg` 文件本体，也不会让 EXE 继承 master API Key。Private 新分支在入库阶段支持 `tags`，SDK 会在 `multipart/complete` 里提交用户自定义标签，并过滤空标签、重复标签和系统类型词。
 
-EXE 的“进入社区资源页”按钮应使用 `client.community_bind_url(...)` 生成 `/resources?bind=XXXXXX`。网站前端读取 `?bind=` 后，如果当前浏览器已有 `access_token` 或 `device_api_key`，会调用 `/auth/device/claim` 建立共享管理关系；如果浏览器还没有身份，则调用 `/auth/device` 携带 `bind_code` 做预绑定。两条路径都应让用户在网页端看到并管理 EXE 已上传资源；区别是 claim 不改资源原归属，预绑定会让网页直接成为 EXE 同一身份。
+EXE 的“进入社区资源页”按钮应使用 `client.community_bind_url(...)` 生成 `/resources?bind=XXXXXX`。网站前端读取 `?bind=` 后，如果当前浏览器已有 `access_token` 或 `device_api_key`，会调用 `/auth/device/claim` 建立共享管理关系，让网页端看到并管理 EXE 已上传资源；如果浏览器还没有身份，则调用 `/auth/device` 携带 `bind_code` 做预绑定。预绑定会创建浏览器自己的 device 身份，并让后续上传归属到绑定码 owner，但不会继承 EXE 或 master API Key。
 
 ## 源码确认点
 
 | 功能点 | 源码行为 | SDK 对应 |
 |---|---|---|
-| 设备入口 | `/auth/device` 先处理有效 `bind_code`，再按 `device_id`、`user_devices` 查找。旧指纹字段即使后端兼容，也不作为 SDK 接入路径 | `from_device(...)` / `from_device_file(...)` |
+| 设备入口 | `/auth/device` 只按 `device_id` 找回当前 device 身份；`bind_code` 只建立 `user_claims` 预绑定关系，不登录正式账号。旧指纹字段不作为 SDK 接入路径 | `from_device(...)` / `from_device_file(...)` |
 | 绑定码来源 | 服务端为没有 `bind_code` 的用户生成 6 位码 | `client.bind_code` 只读取服务端返回值 |
 | API Key 复用 | 已有 `device-key` 时 `/auth/device` 可能返回空 `api_key`，但仍返回 `access_token` | SDK 允许 `api_key=""`，上传时用可用 token |
 | URL 自动绑定 | `/resources?bind=XXXXXX` 有 token 时走 claim，无 token 时走预绑定；claim 后可编辑删除已认领资源 | `community_bind_url(...)` / `build_bind_url(...)` / `edit_resource(...)` / `delete_resource(...)` |
@@ -54,13 +54,13 @@ python -m pytest tests -q
 
 | 编号 | 用例 | 预期 |
 |---|---|---|
-| Q1 | 浏览器游客上传 -> EXE 用浏览器 `bind_code` 预绑定 -> EXE 上传 | 两边 `my_uploads` 都能看到浏览器和 EXE 文件 |
+| Q1 | 浏览器游客上传 -> EXE 用浏览器 `bind_code` 预绑定 -> EXE 上传 | EXE 上传归到浏览器 owner；浏览器能看到两份文件，EXE 不继承浏览器 API Key |
 | Q2 | 浏览器 A 上传 -> 浏览器 B 没有原 `device_id`，也没有 `bind_code` | 浏览器 B 得到独立游客身份，看不到 A 的文件 |
-| Q3 | 游客注册成正式用户 | `bind_code` 不变，旧游客 API Key 仍可用，文件不丢 |
-| Q4 | EXE 首传 -> 打开 `/resources?bind=EXE码`，浏览器无身份 | 网页预绑定到 EXE 游客，看到 EXE 文件 |
+| Q3 | 游客注册成正式用户 | `bind_code` 不变，旧游客 API Key 失效，文件不丢 |
+| Q4 | EXE 首传 -> 打开 `/resources?bind=EXE码`，浏览器无身份 | 网页创建自己的 device 身份并预绑定；后续上传归到 EXE owner，不继承 EXE API Key |
 | Q4b | EXE 首传 -> 已有浏览器游客打开 `/resources?bind=EXE码` | 网页走 claim，当前浏览器可见并可编辑/删除 EXE 文件，但资源原归属仍是 EXE 身份 |
 | Q5 | 同设备多次认证、游客注册、第三设备预绑定 | 对外展示的主 `bind_code` 保持稳定 |
-| E1 | 旧游客 API Key 注册升级后继续上传 | 上传仍归升级后的用户 |
+| E1 | 旧游客 API Key 注册升级后继续上传 | 旧 API Key 被拒绝，避免游客 key 继承正式身份 |
 | E2 | 同设备重复预绑定 | 不创建多余活跃用户 |
 | E3 | 已认领设备再次被同一用户认领 | 幂等返回当前用户 |
 | E3b | 已认领游客码被另一用户认领 | A 和 B 都可见并可管理该游客资源，但 A/B 自己的私有资源不会互相暴露 |

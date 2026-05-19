@@ -155,8 +155,9 @@ class ShinsekaiUploadClient:
         生成一个临时 UUID，适合测试，不适合作为正式客户端的默认行为。
 
         bind_code 是预绑定入口：用户首次启动 EXE 时如果已经知道网页或其他设备
-        的绑定码，就把它一起传给 /auth/device，服务端会直接把这个 device_id
-        挂到绑定码所属用户下面，不再先创建独立游客。
+        的绑定码，就把它一起传给 /auth/device。服务端仍会创建或复用当前 EXE
+        自己的 device 身份，并建立 user_claims 关系；后续上传会归属到该绑定码
+        的 owner，但不会把 owner 的 API Key 或正式账号身份发给 EXE。
         """
         stable_device_id = (device_id or str(uuid.uuid4())).strip()
         http = session or requests.Session()
@@ -315,8 +316,8 @@ class ShinsekaiUploadClient:
         把当前设备合并到绑定码所属用户。
 
         典型 EXE 流程：用户在 EXE 输入网页控制台显示的六位绑定码，SDK 把该码和
-        本机 device_id 提交到 /auth/device/merge。服务端会迁移资源归属并返回
-        合并后用户的 API Key。
+        本机 device_id 提交到 /auth/device/merge。新服务端只建立资源管理/归属
+        关系，并返回当前 device 身份的 access_token；不会返回绑定码 owner 的 API Key。
         """
         normalized_code = cls.normalize_bind_code(bind_code)
         device_id = device_id.strip()
@@ -339,7 +340,7 @@ class ShinsekaiUploadClient:
 
     def merge_with_bind_code(self, bind_code: str, device_id: str | None = None) -> DeviceAuthInfo:
         """
-        用用户输入的绑定码合并当前设备，并把客户端切换到合并后的 API Key。
+        用用户输入的绑定码为当前设备建立资源管理/归属关系，并刷新当前 device 身份的 token。
 
         如果客户端是通过 from_device 或 from_device_file 创建的，可以省略
         device_id；SDK 会使用当前设备认证信息里的 device_id。
@@ -381,8 +382,8 @@ class ShinsekaiUploadClient:
           - character_pack: .char
           - background_pack: .bg
 
-        资源归属由服务端根据 API Key/JWT 用户身份决定。uploader 只是展示字段，
-        不再承担绑定码或资源归属同步职责。
+        资源归属由服务端根据 Bearer 身份和 user_claims 预绑定关系决定。uploader
+        只是展示字段，不承担绑定码或资源归属同步职责。
         """
         normalized_models = self._normalize_verified_models(verified_models, resource_type)
         normalized_tags = self._normalize_tags(tags)
@@ -399,8 +400,8 @@ class ShinsekaiUploadClient:
         file_hash = self.sha256_file(filepath)
         upload_bind_code = self.bind_code
 
-        # 设备认证模式下把服务端固定绑定码随上传元数据提交，兼容服务端未来的校验或审计；
-        # 当前网站源码的资源归属仍以 Bearer 认证身份为准。
+        # 设备认证模式下把服务端返回的展示 bind_code 随上传元数据提交；服务端会结合
+        # Bearer 身份和 user_claims 判断最终 owner，但不会因此授予 master API Key。
         start_payload = {
             "display_name": name,
             "filename": filename,

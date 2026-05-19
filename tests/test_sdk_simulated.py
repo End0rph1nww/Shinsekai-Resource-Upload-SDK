@@ -35,8 +35,8 @@ class FakeServerSession:
         fail=None,
         device_api_key="sk-sn-device",
         device_access_token="jwt-device",
-        prebind_api_key="sk-sn-master",
-        prebind_access_token="jwt-master",
+        prebind_api_key="sk-sn-device-prebound",
+        prebind_access_token="jwt-device-prebound",
         duplicate_start=False,
         duplicate_complete=False,
         device_access_tokens=None,
@@ -91,9 +91,9 @@ class FakeServerSession:
             return FakeResponse({
                 "access_token": access_token,
                 "api_key": self.prebind_api_key if is_prebound else self.device_api_key,
-                "public_id": "pub-master" if is_prebound else "pub-device",
+                "public_id": "pub-device",
                 "bind_code": "A1B2C3" if is_prebound else "EXE123",
-                "is_guest": False if is_prebound else True,
+                "is_guest": True,
                 "refresh_token": "refresh-token",
             })
 
@@ -114,10 +114,10 @@ class FakeServerSession:
                 raise AssertionError("merge requires device_id")
             return FakeResponse({
                 "access_token": "jwt-merged",
-                "api_key": "sk-sn-merged",
-                "public_id": "pub-merged",
+                "api_key": "",
+                "public_id": "pub-device",
                 "bind_code": "WEB999",
-                "is_guest": False,
+                "is_guest": True,
             })
 
         if url.endswith("/api/resources/multipart/start"):
@@ -381,9 +381,10 @@ def test_device_auth_prebind(tmp_path):
     )
     assert fake.posts[0][2]["bind_code"] == "A1B2C3"
     assert "fingerprint" not in fake.posts[0][2]
-    assert client.api_key == "sk-sn-master"
+    assert client.api_key == "sk-sn-device-prebound"
+    assert client.access_token == "jwt-device-prebound"
     assert client.bind_code == "A1B2C3"
-    assert client.device_auth.is_guest is False
+    assert client.device_auth.is_guest is True
 
 
 def test_claim_bind_code():
@@ -410,13 +411,16 @@ def test_merge_compatibility():
         base_url="https://api.test",
         session=fake,
     )
-    assert auth.api_key == "sk-sn-merged"
+    assert auth.api_key == ""
+    assert auth.access_token == "jwt-merged"
+    assert auth.is_guest is True
     assert fake.posts[-1][2] == {"bind_code": "WEB999", "device_id": "device-1"}
 
     client = ShinsekaiUploadClient.from_device(device_id="device-1", base_url="https://api.test", session=FakeServerSession())
     auth2 = client.merge_with_bind_code("web999")
-    assert auth2.public_id == "pub-merged"
-    assert client.api_key == "sk-sn-merged"
+    assert auth2.public_id == "pub-device"
+    assert client.api_key == ""
+    assert client.access_token == "jwt-merged"
     assert client.bind_code == "WEB999"
 
 
