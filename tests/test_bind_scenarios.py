@@ -32,15 +32,11 @@ class BindScenarioServer:
         self.next_resource_id = 1
 
     def auth_device(self, device_id: str, bind_code: str = "") -> dict:
-        code = bind_code.strip().upper()
-        source = self.find_by_bind_code(code) if code else None
         user = self.find_active_by_device(device_id)
         if not user:
             user = self.create_user(role="device", device_id=device_id)
-        if source and source.id != user.id:
-            self.user_claims.add((source.id, user.id))
         self.deactivate_api_keys(user)
-        return self.issue_auth(user, include_api_key=True, bind_code_override=source.bind_code if source else None)
+        return self.issue_auth(user, include_api_key=True)
 
     def register(self, device_id: str, email: str) -> Identity:
         user = self.find_active_by_device(device_id)
@@ -93,7 +89,8 @@ class BindScenarioServer:
     def open_web_with_bind(self, device_id: str, bind_code: str, logged_api_key: str | None = None) -> dict:
         if logged_api_key:
             return self.claim(logged_api_key, bind_code)
-        return self.auth_device(device_id, bind_code=bind_code)
+        browser = self.auth_device(device_id)
+        return self.claim(auth_token(browser), bind_code)
 
     def create_user(self, *, role: str, device_id: str = "") -> Identity:
         user = Identity(
@@ -147,10 +144,6 @@ class BindScenarioServer:
         user.api_keys.clear()
 
     def upload_owner_id(self, user: Identity) -> int:
-        if user.role == "device":
-            owners = [owner_id for owner_id, source_id in self.user_claims if source_id == user.id]
-            if owners:
-                return owners[-1]
         return user.id
 
     def find_by_bind_code(self, bind_code: str) -> Identity | None:
@@ -176,7 +169,7 @@ def auth_token(auth: dict) -> str:
     return auth.get("api_key") or auth.get("access_token") or ""
 
 
-def test_q1_browser_guest_upload_then_exe_prebind_syncs_files():
+def test_q1_browser_guest_upload_then_opening_exe_bind_claims_exe_files():
     server = BindScenarioServer()
     browser = server.auth_device("browser-a")
     server.upload(auth_token(browser), "browser-file")
@@ -186,8 +179,10 @@ def test_q1_browser_guest_upload_then_exe_prebind_syncs_files():
     assert exe["is_guest"] is True
     server.upload(auth_token(exe), "exe-file")
 
+    server.open_web_with_bind("browser-a", exe["bind_code"], logged_api_key=auth_token(browser))
+
     assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["browser-file", "exe-file"]
-    assert server.my_uploads(auth_token(exe)) == []
+    assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file"]
 
 
 def test_q2_new_browser_without_bind_gets_separate_identity():
@@ -217,7 +212,20 @@ def test_q3_register_keeps_bind_code_and_deactivates_old_guest_key():
     assert [item["name"] for item in server.my_uploads(auth_token(fresh))] == ["guest-file"]
 
 
-def test_q4_exe_first_upload_then_community_url_prebinds_browser_future_uploads():
+def test_q3_logout_refresh_device_auth_creates_new_guest_instead_of_restoring_registered_user():
+    server = BindScenarioServer()
+    guest = server.auth_device("browser-a")
+    before_bind = guest["bind_code"]
+    registered = server.register("browser-a", "alice@example.com")
+
+    refreshed = server.auth_device("browser-a")
+
+    assert registered.bind_code == before_bind
+    assert refreshed["is_guest"] is True
+    assert refreshed["bind_code"] != registered.bind_code
+
+
+def test_q4_exe_first_upload_then_community_url_claims_exe_files_for_browser_guest():
     server = BindScenarioServer()
     exe = server.auth_device("exe-a")
     server.upload(auth_token(exe), "exe-file")
@@ -226,11 +234,12 @@ def test_q4_exe_first_upload_then_community_url_prebinds_browser_future_uploads(
 
     browser = server.open_web_with_bind("browser-a", bind)
 
-    assert browser["bind_code"] == exe["bind_code"]
+    assert browser["bind_code"] != exe["bind_code"]
     assert browser["is_guest"] is True
-    assert server.my_uploads(auth_token(browser)) == []
+    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["exe-file"]
     server.upload(auth_token(browser), "browser-future-file")
-    assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file", "browser-future-file"]
+    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["exe-file", "browser-future-file"]
+    assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file"]
 
 
 def test_q4_existing_browser_guest_opens_exe_bind_url_claims_exe_files():
@@ -249,7 +258,7 @@ def test_q4_existing_browser_guest_opens_exe_bind_url_claims_exe_files():
     assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file"]
 
 
-def test_q5_bind_code_is_stable_across_auth_register_and_prebind():
+def test_q5_bind_code_is_stable_across_auth_register_and_device_bind_argument_is_ignored():
     server = BindScenarioServer()
     first = server.auth_device("browser-a")
     second = server.auth_device("browser-a")
@@ -259,7 +268,7 @@ def test_q5_bind_code_is_stable_across_auth_register_and_prebind():
     assert registered.bind_code == first["bind_code"]
 
     exe = server.auth_device("exe-a", bind_code=first["bind_code"])
-    assert exe["bind_code"] == first["bind_code"]
+    assert exe["bind_code"] != first["bind_code"]
 
 
 def test_e1_old_guest_api_key_is_deactivated_after_register_upgrade():
@@ -271,7 +280,7 @@ def test_e1_old_guest_api_key_is_deactivated_after_register_upgrade():
         server.upload(auth_token(guest), "after-register-file")
 
 
-def test_e2_repeated_prebind_same_device_does_not_create_extra_user():
+def test_e2_repeated_device_auth_with_bind_code_argument_does_not_create_extra_user():
     server = BindScenarioServer()
     master = server.auth_device("browser-a")
     before = server.active_user_count()
@@ -315,7 +324,7 @@ def test_e3_claim_already_bound_by_another_user_returns_current_identity():
     assert server.find_by_bind_code(source["bind_code"]).is_active is True
 
 
-def test_registered_bind_can_be_claimed_and_prebinds_future_uploads():
+def test_registered_bind_can_be_claimed_but_device_auth_does_not_prebind_future_uploads():
     server = BindScenarioServer()
     guest = server.auth_device("registered-device")
     server.upload(auth_token(guest), "registered-before-file")
@@ -331,11 +340,8 @@ def test_registered_bind_can_be_claimed_and_prebinds_future_uploads():
     third = server.auth_device("third-device", bind_code=registered.bind_code)
     server.upload(auth_token(third), "third-prebound-file")
 
-    assert [item["name"] for item in server.my_uploads(auth_token(registered_auth))] == [
-        "registered-before-file",
-        "third-prebound-file",
-    ]
-    assert server.my_uploads(auth_token(third)) == []
+    assert [item["name"] for item in server.my_uploads(auth_token(registered_auth))] == ["registered-before-file"]
+    assert [item["name"] for item in server.my_uploads(auth_token(third))] == ["third-prebound-file"]
 
 
 def test_e4_no_bind_creates_normal_guest():

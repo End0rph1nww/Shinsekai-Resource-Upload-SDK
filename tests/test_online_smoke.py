@@ -192,33 +192,37 @@ def test_online_sdk_resource_management_owner_roundtrip(tmp_path: Path):
         cleanup_resources(client, created)
 
 
-def test_online_prebind_second_device_syncs_uploads(tmp_path: Path):
+def test_online_device_bind_code_argument_does_not_change_upload_owner(tmp_path: Path):
     require_online()
-    created: list[int] = []
-    master = device_client(tmp_path, "prebind_master")
+    master_created: list[int] = []
+    slave_created: list[int] = []
+    master = device_client(tmp_path, "bind_arg_master")
 
     try:
         first_file = tmp_path / f"{unique_name('master')}.char"
         write_payload(first_file, 80 * 1024, first_file.stem)
         first = master.upload_resource(unique_name("master"), str(first_file), "character_pack")
-        created.append(int(first["id"]))
+        master_created.append(int(first["id"]))
 
-        slave = device_client(tmp_path, "prebind_slave", bind_code=master.bind_code)
+        slave = device_client(tmp_path, "bind_arg_slave", bind_code=master.bind_code)
         second_file = tmp_path / f"{unique_name('slave')}.char"
         write_payload(second_file, 80 * 1024, second_file.stem)
         second = slave.upload_resource(unique_name("slave"), str(second_file), "character_pack")
-        created.append(int(second["id"]))
+        slave_created.append(int(second["id"]))
 
-        uploads = fetch_my_uploads(master)
-        ids = {item["id"] for item in uploads}
+        master_ids = {item["id"] for item in fetch_my_uploads(master)}
+        slave_ids = {item["id"] for item in fetch_my_uploads(slave)}
 
-        assert slave.bind_code == master.bind_code
+        assert slave.bind_code != master.bind_code
         assert slave.device_auth and slave.device_auth.is_guest is True
-        assert first["id"] in ids
-        assert second["id"] in ids
-        assert fetch_my_uploads(slave) == []
+        assert first["id"] in master_ids
+        assert second["id"] not in master_ids
+        assert first["id"] not in slave_ids
+        assert second["id"] in slave_ids
     finally:
-        cleanup_resources(master, created)
+        cleanup_resources(master, master_created)
+        if "slave" in locals():
+            cleanup_resources(slave, slave_created)
 
 
 def test_online_claim_guest_bind_code_syncs_uploads(tmp_path: Path):

@@ -128,7 +128,7 @@ class ShinsekaiUploadClient:
 
         EXE 在用户点击上传时完成设备认证并拿到 bind_code。上传完成后，客户端可以把
         这个 URL 放到“进入社区/查看资源”按钮上。浏览器打开后，网站会读取 ?bind=，
-        自动把当前网页身份和 EXE 身份同步。
+        为当前网页身份建立对 EXE 资源的认领管理关系。
         """
         if not self.bind_code:
             raise ValueError("当前客户端没有 bind_code，请先通过 from_device/from_device_file 完成设备认证")
@@ -154,10 +154,9 @@ class ShinsekaiUploadClient:
         不再返回明文 API Key，而是返回 access_token。这里未传入 device_id 时只
         生成一个临时 UUID，适合测试，不适合作为正式客户端的默认行为。
 
-        bind_code 是预绑定入口：用户首次启动 EXE 时如果已经知道网页或其他设备
-        的绑定码，就把它一起传给 /auth/device。服务端仍会创建或复用当前 EXE
-        自己的 device 身份，并建立 user_claims 关系；后续上传会归属到该绑定码
-        的 owner，但不会把 owner 的 API Key 或正式账号身份发给 EXE。
+        bind_code 参数仅为旧版本兼容保留。新版 MVP 里 /auth/device 只负责取回
+        EXE 自己的稳定设备身份；网页端通过 /resources?bind=EXE_CODE 再调用
+        /auth/device/claim 来认领 EXE 已上传资源。
         """
         stable_device_id = (device_id or str(uuid.uuid4())).strip()
         http = session or requests.Session()
@@ -253,9 +252,6 @@ class ShinsekaiUploadClient:
             raise ValueError("device_id 长度不能超过 64 个字符")
 
         payload = {"device_id": device_id}
-        normalized_code = cls.normalize_bind_code(bind_code)
-        if normalized_code:
-            payload["bind_code"] = normalized_code
 
         http = session or requests.Session()
         resp = http.post(
@@ -267,7 +263,10 @@ class ShinsekaiUploadClient:
         data = cls._checked_json(resp, "设备认证")
         if not isinstance(data, dict):
             raise ShinsekaiUploadError("设备认证失败：响应格式无效")
-        return cls._device_auth_from_json(data, device_id, require_api_key=False, require_auth_token=True)
+        auth = cls._device_auth_from_json(data, device_id, require_api_key=False, require_auth_token=True)
+        if not auth.is_guest:
+            raise ShinsekaiUploadError("设备认证失败：/auth/device 必须返回游客身份，注册账号需要通过网页登录后认领")
+        return auth
 
     def claim_bind_code(self, bind_code: str) -> DeviceAuthInfo:
         """
@@ -382,8 +381,8 @@ class ShinsekaiUploadClient:
           - character_pack: .char
           - background_pack: .bg
 
-        资源归属由服务端根据 Bearer 身份和 user_claims 预绑定关系决定。uploader
-        只是展示字段，不承担绑定码或资源归属同步职责。
+        资源归属由服务端根据 Bearer 身份决定；user_claims 只影响已认领资源的列表
+        和管理权限。uploader 只是展示字段，不承担绑定码或资源归属同步职责。
         """
         normalized_models = self._normalize_verified_models(verified_models, resource_type)
         normalized_tags = self._normalize_tags(tags)
@@ -899,7 +898,6 @@ class ShinsekaiUploadClient:
             return False
         auth = self.authenticate_device(
             device_id=self.device_auth.device_id,
-            bind_code=self.device_auth.bind_code or None,
             base_url=self.base_url,
             timeout=self.timeout,
             session=self.session,

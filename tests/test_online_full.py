@@ -124,22 +124,29 @@ def upload_by_id(client: ShinsekaiUploadClient, resource_id: int) -> dict:
     raise AssertionError(f"resource {resource_id} not found")
 
 
-def test_online_full_q1_browser_guest_upload_then_exe_prebind_syncs(tmp_path: Path):
+def test_online_full_q1_browser_guest_upload_then_opening_exe_bind_claims_exe_files(tmp_path: Path):
     require_full_online()
-    created: list[int] = []
+    browser_created: list[int] = []
+    exe_created: list[int] = []
     browser = full_device_client(tmp_path, "full_q1_browser")
 
     try:
-        browser_file = upload_char(browser, tmp_path, "full_q1_browser", created)
+        browser_file = upload_char(browser, tmp_path, "full_q1_browser", browser_created)
         exe = full_device_client(tmp_path, "full_q1_exe", bind_code=browser.bind_code)
-        exe_file = upload_char(exe, tmp_path, "full_q1_exe", created)
-        ids = {item["id"] for item in fetch_my_uploads(browser)}
+        exe_file = upload_char(exe, tmp_path, "full_q1_exe", exe_created)
+        browser.claim_bind_code(exe.bind_code)
+        browser_ids = {item["id"] for item in fetch_my_uploads(browser)}
+        exe_ids = {item["id"] for item in fetch_my_uploads(exe)}
 
-        assert exe.bind_code == browser.bind_code
-        assert browser_file["id"] in ids
-        assert exe_file["id"] in ids
+        assert exe.bind_code != browser.bind_code
+        assert browser_file["id"] in browser_ids
+        assert exe_file["id"] in browser_ids
+        assert browser_file["id"] not in exe_ids
+        assert exe_file["id"] in exe_ids
     finally:
-        cleanup_resources(browser, created)
+        cleanup_resources(browser, browser_created)
+        if "exe" in locals():
+            cleanup_resources(exe, exe_created)
 
 
 def test_online_full_q2_new_device_without_bind_is_separate_identity(tmp_path: Path):
@@ -184,26 +191,34 @@ def test_online_full_q3_register_keeps_bind_code_and_deactivates_guest_api_key(t
         cleanup_resources(registered if "registered" in locals() else guest, created)
 
 
-def test_online_full_q4_exe_first_upload_then_web_prebinds_future_uploads(tmp_path: Path):
+def test_online_full_q4_exe_first_upload_then_web_claims_exe_files(tmp_path: Path):
     require_full_online()
-    created: list[int] = []
+    exe_created: list[int] = []
+    web_created: list[int] = []
     exe = full_device_client(tmp_path, "full_q4_exe")
 
     try:
-        uploaded = upload_char(exe, tmp_path, "full_q4_exe", created)
-        web = full_device_client(tmp_path, "full_q4_web", bind_code=exe.bind_code)
+        uploaded = upload_char(exe, tmp_path, "full_q4_exe", exe_created)
+        web = full_device_client(tmp_path, "full_q4_web")
+        web.claim_bind_code(exe.bind_code)
+        web_ids = {item["id"] for item in fetch_my_uploads(web)}
 
-        assert web.bind_code == exe.bind_code
+        assert web.bind_code != exe.bind_code
         assert web.device_auth and web.device_auth.is_guest is True
-        assert uploaded["id"] not in {item["id"] for item in fetch_my_uploads(web)}
+        assert uploaded["id"] in web_ids
 
-        web_file = upload_char(web, tmp_path, "full_q4_web_future", created)
-        ids = {item["id"] for item in fetch_my_uploads(exe)}
+        web_file = upload_char(web, tmp_path, "full_q4_web_future", web_created)
+        exe_ids = {item["id"] for item in fetch_my_uploads(exe)}
+        web_ids = {item["id"] for item in fetch_my_uploads(web)}
 
-        assert uploaded["id"] in ids
-        assert web_file["id"] in ids
+        assert uploaded["id"] in exe_ids
+        assert web_file["id"] not in exe_ids
+        assert uploaded["id"] in web_ids
+        assert web_file["id"] in web_ids
     finally:
-        cleanup_resources(exe, created)
+        cleanup_resources(exe, exe_created)
+        if "web" in locals():
+            cleanup_resources(web, web_created)
 
 
 def test_online_full_q4_existing_browser_claims_exe_bind_code(tmp_path: Path):
@@ -226,7 +241,7 @@ def test_online_full_q4_existing_browser_claims_exe_bind_code(tmp_path: Path):
         cleanup_resources(exe, exe_created)
 
 
-def test_online_full_q5_bind_code_stable_after_register_and_third_prebind(tmp_path: Path):
+def test_online_full_q5_bind_code_stable_after_register_and_third_bind_argument_ignored(tmp_path: Path):
     require_full_online()
     password = "CodexOnlineFull123!"
     email = f"codex-full-stable-{uuid.uuid4().hex[:12]}@example.com"
@@ -239,7 +254,25 @@ def test_online_full_q5_bind_code_stable_after_register_and_third_prebind(tmp_pa
     third = full_device_client(tmp_path, "full_q5_third", bind_code=before_bind)
 
     assert get_me(registered)["bind_code"] == before_bind
-    assert third.bind_code == before_bind
+    assert third.bind_code != before_bind
+
+
+def test_online_full_logout_refresh_device_auth_returns_new_guest(tmp_path: Path):
+    require_full_online()
+    password = "CodexOnlineFull123!"
+    email = f"codex-full-logout-{uuid.uuid4().hex[:12]}@example.com"
+    device_path = tmp_path / "full_logout_device_id.txt"
+    guest = ShinsekaiUploadClient.from_device_file(str(device_path), base_url=BASE_URL)
+    before_bind = guest.bind_code
+    device_id = guest.device_auth.device_id if guest.device_auth else ""
+
+    register_user_from_device(guest, email=email, password=password)
+    registered = login_client(email, password, device_id=device_id)
+    refreshed = ShinsekaiUploadClient.from_device_file(str(device_path), base_url=BASE_URL)
+
+    assert get_me(registered)["bind_code"] == before_bind
+    assert refreshed.device_auth.is_guest is True
+    assert refreshed.bind_code != before_bind
 
 
 def test_online_full_invalid_bind_code_creates_independent_guest(tmp_path: Path):
@@ -259,14 +292,14 @@ def test_online_full_invalid_bind_code_creates_independent_guest(tmp_path: Path)
         cleanup_resources(master, created)
 
 
-def test_online_full_repeated_prebind_same_device_is_idempotent(tmp_path: Path):
+def test_online_full_repeated_device_auth_with_bind_code_argument_is_idempotent(tmp_path: Path):
     require_full_online()
     master = full_device_client(tmp_path, "full_repeat_master")
     first = full_device_client(tmp_path, "full_repeat_slave", bind_code=master.bind_code)
     second = full_device_client(tmp_path, "full_repeat_slave", bind_code=master.bind_code)
 
-    assert first.bind_code == master.bind_code
-    assert second.bind_code == master.bind_code
+    assert first.bind_code != master.bind_code
+    assert second.bind_code == first.bind_code
 
 
 def test_online_full_claim_self_rejected_and_already_claimed_by_other_returns_current_identity(tmp_path: Path):
@@ -345,9 +378,10 @@ def test_online_full_unclaimed_resource_edit_delete_forbidden(tmp_path: Path):
         cleanup_resources(owner, owner_created)
 
 
-def test_online_full_registered_bind_can_be_claimed_and_prebind_uploads_sync(tmp_path: Path):
+def test_online_full_registered_bind_can_be_claimed_but_device_auth_does_not_prebind(tmp_path: Path):
     require_full_online()
     created: list[int] = []
+    third_created: list[int] = []
     password = "CodexOnlineFull123!"
     email = f"codex-full-registered-bind-{uuid.uuid4().hex[:12]}@example.com"
     guest = full_device_client(tmp_path, "full_registered_bind_guest")
@@ -366,11 +400,16 @@ def test_online_full_registered_bind_can_be_claimed_and_prebind_uploads_sync(tmp
 
         third = full_device_client(tmp_path, "full_registered_bind_third", bind_code=before_bind)
         uploaded = upload_char(third, tmp_path, "full_registered_bind_third", created)
+        third_created.append(int(uploaded["id"]))
+        created.remove(int(uploaded["id"]))
 
-        assert third.bind_code == before_bind
-        assert int(uploaded["id"]) in upload_ids(registered)
+        assert third.bind_code != before_bind
+        assert int(uploaded["id"]) not in upload_ids(registered)
+        assert int(uploaded["id"]) in upload_ids(third)
     finally:
         cleanup_resources(registered if "registered" in locals() else guest, created)
+        if "third" in locals():
+            cleanup_resources(third, third_created)
 
 
 def test_online_full_duplicate_sha256_returns_existing_resource(tmp_path: Path):
