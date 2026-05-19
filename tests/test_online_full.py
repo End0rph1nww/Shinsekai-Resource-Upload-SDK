@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -35,12 +36,21 @@ def full_device_client(
     bind_code: str | None = None,
     parallel_uploads: int = 5,
 ) -> ShinsekaiUploadClient:
-    return ShinsekaiUploadClient.from_device_file(
-        str(tmp_path / f"{prefix}_device_id.txt"),
-        bind_code=bind_code,
-        base_url=BASE_URL,
-        parallel_uploads=parallel_uploads,
-    )
+    device_path = str(tmp_path / f"{prefix}_device_id.txt")
+    for attempt in range(2):
+        try:
+            return ShinsekaiUploadClient.from_device_file(
+                device_path,
+                bind_code=bind_code,
+                base_url=BASE_URL,
+                parallel_uploads=parallel_uploads,
+            )
+        except ShinsekaiUploadError as exc:
+            if attempt == 0 and "HTTP 429" in str(exc):
+                time.sleep(65)
+                continue
+            raise
+    raise AssertionError("device auth retry loop exhausted")
 
 
 def upload_char(client: ShinsekaiUploadClient, tmp_path: Path, prefix: str, created: list[int]) -> dict:
@@ -76,6 +86,23 @@ def register_user_from_device(client: ShinsekaiUploadClient, *, email: str, pass
             "password": password,
             "nickname": email.split("@")[0],
             "device_id": device_id,
+        },
+        timeout=60,
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert isinstance(data, dict)
+    return data
+
+
+def register_user(email: str, password: str) -> dict:
+    resp = requests.post(
+        f"{BASE_URL}/auth/register",
+        headers={"Content-Type": "application/json"},
+        json={
+            "email": email,
+            "password": password,
+            "nickname": email.split("@")[0],
         },
         timeout=60,
     )
@@ -126,9 +153,12 @@ def upload_by_id(client: ShinsekaiUploadClient, resource_id: int) -> dict:
 
 def test_online_full_q1_browser_guest_upload_then_opening_exe_bind_claims_exe_files(tmp_path: Path):
     require_full_online()
+    password = "CodexOnlineFull123!"
+    email = f"codex-full-q1-{uuid.uuid4().hex[:12]}@example.com"
     browser_created: list[int] = []
     exe_created: list[int] = []
     browser = full_device_client(tmp_path, "full_q1_browser")
+    device_id = browser.device_auth.device_id
 
     try:
         browser_file = upload_char(browser, tmp_path, "full_q1_browser", browser_created)
@@ -140,11 +170,16 @@ def test_online_full_q1_browser_guest_upload_then_opening_exe_bind_claims_exe_fi
 
         assert exe.bind_code != browser.bind_code
         assert browser_file["id"] in browser_ids
-        assert exe_file["id"] in browser_ids
+        assert exe_file["id"] not in browser_ids
         assert browser_file["id"] not in exe_ids
         assert exe_file["id"] in exe_ids
+        register_user_from_device(browser, email=email, password=password)
+        registered = login_client(email, password, device_id=device_id)
+        registered_ids = {item["id"] for item in fetch_my_uploads(registered)}
+        assert browser_file["id"] in registered_ids
+        assert exe_file["id"] in registered_ids
     finally:
-        cleanup_resources(browser, browser_created)
+        cleanup_resources(registered if "registered" in locals() else browser, browser_created)
         if "exe" in locals():
             cleanup_resources(exe, exe_created)
 
@@ -165,7 +200,7 @@ def test_online_full_q2_new_device_without_bind_is_separate_identity(tmp_path: P
         cleanup_resources(browser_a, created)
 
 
-def test_online_full_q3_register_keeps_bind_code_and_deactivates_guest_api_key(tmp_path: Path):
+def test_online_full_q3_register_keeps_bind_code_and_current_device_key_identity(tmp_path: Path):
     require_full_online()
     created: list[int] = []
     password = "CodexOnlineFull123!"
@@ -184,15 +219,43 @@ def test_online_full_q3_register_keeps_bind_code_and_deactivates_guest_api_key(t
         assert after_me["role"] == "user"
         assert after_me["bind_code"] == before_bind
         assert first["id"] in ids
-        old_api_key_client = ShinsekaiUploadClient(guest.api_key, base_url=BASE_URL, parallel_uploads=5)
-        with pytest.raises(ShinsekaiUploadError):
-            upload_char(old_api_key_client, tmp_path, "full_q3_after_register_guest_key", created)
+        old_key_me = requests.get(
+            f"{BASE_URL}/users/me",
+            headers={"Authorization": f"Bearer {guest.api_key}"},
+            timeout=60,
+        )
+        assert old_key_me.status_code == 200
+        assert old_key_me.json()["role"] == "user"
     finally:
         cleanup_resources(registered if "registered" in locals() else guest, created)
 
 
+def test_online_full_existing_user_login_jwt_survives_stale_guest_key_users_me_401(tmp_path: Path):
+    require_full_online()
+    password = "CodexOnlineFull123!"
+    email = f"codex-full-stale-key-{uuid.uuid4().hex[:12]}@example.com"
+    register_user(email=email, password=password)
+    guest = full_device_client(tmp_path, "full_stale_key_guest")
+    old_key = guest.api_key
+    device_id = guest.device_auth.device_id
+
+    registered = login_client(email, password, device_id=device_id)
+    stale = requests.get(
+        f"{BASE_URL}/users/me",
+        headers={"Authorization": f"Bearer {old_key}"},
+        timeout=60,
+    )
+    me = get_me(registered)
+
+    assert old_key
+    assert stale.status_code == 401
+    assert me["role"] == "user"
+
+
 def test_online_full_q4_exe_first_upload_then_web_claims_exe_files(tmp_path: Path):
     require_full_online()
+    password = "CodexOnlineFull123!"
+    email = f"codex-full-q4-{uuid.uuid4().hex[:12]}@example.com"
     exe_created: list[int] = []
     web_created: list[int] = []
     exe = full_device_client(tmp_path, "full_q4_exe")
@@ -200,12 +263,13 @@ def test_online_full_q4_exe_first_upload_then_web_claims_exe_files(tmp_path: Pat
     try:
         uploaded = upload_char(exe, tmp_path, "full_q4_exe", exe_created)
         web = full_device_client(tmp_path, "full_q4_web")
+        device_id = web.device_auth.device_id
         web.claim_bind_code(exe.bind_code)
         web_ids = {item["id"] for item in fetch_my_uploads(web)}
 
         assert web.bind_code != exe.bind_code
         assert web.device_auth and web.device_auth.is_guest is True
-        assert uploaded["id"] in web_ids
+        assert uploaded["id"] not in web_ids
 
         web_file = upload_char(web, tmp_path, "full_q4_web_future", web_created)
         exe_ids = {item["id"] for item in fetch_my_uploads(exe)}
@@ -213,20 +277,28 @@ def test_online_full_q4_exe_first_upload_then_web_claims_exe_files(tmp_path: Pat
 
         assert uploaded["id"] in exe_ids
         assert web_file["id"] not in exe_ids
-        assert uploaded["id"] in web_ids
+        assert uploaded["id"] not in web_ids
         assert web_file["id"] in web_ids
+        register_user_from_device(web, email=email, password=password)
+        registered = login_client(email, password, device_id=device_id)
+        registered_ids = {item["id"] for item in fetch_my_uploads(registered)}
+        assert uploaded["id"] in registered_ids
+        assert web_file["id"] in registered_ids
     finally:
         cleanup_resources(exe, exe_created)
         if "web" in locals():
-            cleanup_resources(web, web_created)
+            cleanup_resources(registered if "registered" in locals() else web, web_created)
 
 
 def test_online_full_q4_existing_browser_claims_exe_bind_code(tmp_path: Path):
     require_full_online()
+    password = "CodexOnlineFull123!"
+    email = f"codex-full-q4b-{uuid.uuid4().hex[:12]}@example.com"
     browser_created: list[int] = []
     exe_created: list[int] = []
     browser = full_device_client(tmp_path, "full_q4b_browser")
     exe = full_device_client(tmp_path, "full_q4b_exe")
+    device_id = browser.device_auth.device_id
 
     try:
         browser_file = upload_char(browser, tmp_path, "full_q4b_browser", browser_created)
@@ -235,9 +307,14 @@ def test_online_full_q4_existing_browser_claims_exe_bind_code(tmp_path: Path):
         ids = {item["id"] for item in fetch_my_uploads(browser)}
 
         assert browser_file["id"] in ids
-        assert exe_file["id"] in ids
+        assert exe_file["id"] not in ids
+        register_user_from_device(browser, email=email, password=password)
+        registered = login_client(email, password, device_id=device_id)
+        registered_ids = {item["id"] for item in fetch_my_uploads(registered)}
+        assert browser_file["id"] in registered_ids
+        assert exe_file["id"] in registered_ids
     finally:
-        cleanup_resources(browser, browser_created)
+        cleanup_resources(registered if "registered" in locals() else browser, browser_created)
         cleanup_resources(exe, exe_created)
 
 
@@ -304,10 +381,20 @@ def test_online_full_repeated_device_auth_with_bind_code_argument_is_idempotent(
 
 def test_online_full_claim_self_rejected_and_already_claimed_by_other_returns_current_identity(tmp_path: Path):
     require_full_online()
+    password = "CodexOnlineFull123!"
     master_a_created: list[int] = []
     guest_created: list[int] = []
-    master_a = full_device_client(tmp_path, "full_claim_master_a")
-    master_b = full_device_client(tmp_path, "full_claim_master_b")
+    master_a_guest = full_device_client(tmp_path, "full_claim_master_a")
+    master_b_guest = full_device_client(tmp_path, "full_claim_master_b")
+    email_a = f"codex-full-claim-a-{uuid.uuid4().hex[:12]}@example.com"
+    email_b = f"codex-full-claim-b-{uuid.uuid4().hex[:12]}@example.com"
+    device_id_a = master_a_guest.device_auth.device_id
+    device_id_b = master_b_guest.device_auth.device_id
+    register_user_from_device(master_a_guest, email=email_a, password=password)
+    register_user_from_device(master_b_guest, email=email_b, password=password)
+    master_a = login_client(email_a, password, device_id=device_id_a)
+    master_b = login_client(email_b, password, device_id=device_id_b)
+    master_a_bind = get_me(master_a)["bind_code"]
     guest = full_device_client(tmp_path, "full_claim_guest")
 
     try:
@@ -315,7 +402,7 @@ def test_online_full_claim_self_rejected_and_already_claimed_by_other_returns_cu
         guest_file = upload_char(guest, tmp_path, "full_claim_guest", guest_created)
 
         with pytest.raises(ShinsekaiUploadError):
-            master_a.claim_bind_code(master_a.bind_code)
+            master_a.claim_bind_code(master_a_bind)
 
         master_a.claim_bind_code(guest.bind_code)
 
@@ -384,6 +471,7 @@ def test_online_full_registered_bind_can_be_claimed_but_device_auth_does_not_pre
     third_created: list[int] = []
     password = "CodexOnlineFull123!"
     email = f"codex-full-registered-bind-{uuid.uuid4().hex[:12]}@example.com"
+    outsider_email = f"codex-full-outsider-{uuid.uuid4().hex[:12]}@example.com"
     guest = full_device_client(tmp_path, "full_registered_bind_guest")
     before_bind = guest.bind_code
     device_id = guest.device_auth.device_id
@@ -396,7 +484,11 @@ def test_online_full_registered_bind_can_be_claimed_but_device_auth_does_not_pre
 
         claim = outsider.claim_bind_code(before_bind)
         assert claim.bind_code == outsider.bind_code
-        assert int(registered_file["id"]) in upload_ids(outsider)
+        assert int(registered_file["id"]) not in upload_ids(outsider)
+        outsider_device_id = outsider.device_auth.device_id
+        register_user_from_device(outsider, email=outsider_email, password=password)
+        outsider_registered = login_client(outsider_email, password, device_id=outsider_device_id)
+        assert int(registered_file["id"]) in upload_ids(outsider_registered)
 
         third = full_device_client(tmp_path, "full_registered_bind_third", bind_code=before_bind)
         uploaded = upload_char(third, tmp_path, "full_registered_bind_third", created)

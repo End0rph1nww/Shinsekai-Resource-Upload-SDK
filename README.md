@@ -25,11 +25,12 @@ SDK 封装了 `.char` 角色包与 `.bg` 背景包的上传流程，也封装了
 | API Key 上传 | 作者已有上传 API Key 时，直接上传资源。 |
 | EXE 设备认证 | EXE 在用户点击上传时生成或读取稳定 `device_id`，调用 `/auth/device` 获取身份。 |
 | 固定绑定码 | `bind_code` 由服务端生成，同一用户身份下保持不变。EXE 不应本地生成六位绑定码。 |
-| `?bind=` 自动认领 | EXE 上传后打开 `/resources?bind=XXXXXX`，网页会先确保当前浏览器有游客或登录身份，再认领并管理 EXE 已上传资源。 |
+| `?bind=` 自动认领 | EXE 上传后打开 `/resources?bind=XXXXXX`，网页会先确保当前浏览器有游客或登录身份，再记录对 EXE 资源的认领关系；登录用户可立即管理，游客要注册或登录后继承。 |
 | 手填绑定码 URL | 软件如果保存了用户手填的账号绑定码，可以用 `build_bind_url(...)` 打开该码对应页面；这不会改变 `/auth/device` 的上传身份。 |
-| 事后认领 | 当前用户可用另一个 active 身份的绑定码建立共享管理关系；资源原归属不变。 |
+| 事后认领 | 当前身份可用另一个 active 身份的绑定码建立认领关系；登录账号可管理认领资源，游客只记录关系并在注册或登录后继承。 |
 | 并行分片上传 | `parallel_uploads` 支持顺序或并行上传分片。 |
 | 断点续传 | 服务端返回 `parts_done` 时，SDK 会跳过已完成分片。 |
+| 中断未完成上传 | `abort_multipart_upload(key, upload_id)` 对应 `/api/resources/multipart/abort`，用于主动取消 R2 multipart 会话。 |
 | 模型标签 | `verified_models` 只允许用于 `.char` / `character_pack`。 |
 | 用户标签 | `tags` 是用户自定义筛选标签，上传入库时提交，网站通过 `/api/tags` 做自动补全。 |
 | 公开资源浏览/下载 | 客户端可直接请求 `/api/resources` 获取全站公开资源列表，并使用返回对象里的 `url` 直链下载文件。 |
@@ -57,7 +58,7 @@ flowchart TD
     O -->|有 JWT 或 API Key| P["POST /auth/device/claim"]
     O -->|无身份| Q["POST /auth/device 创建浏览器游客"]
     Q --> P
-    P --> R["网页可编辑/删除 EXE 资源，原归属不变"]
+    P --> R["登录用户可管理 EXE 资源；游客记录认领，登录后继承"]
 ```
 
 关键规则：
@@ -139,7 +140,7 @@ def on_open_community_button_clicked():
 2. 服务端为这个设备身份生成固定 `bind_code`。
 3. 上传 payload 会自动携带该 `bind_code` 作为展示和审计元数据；资源仍归属当前 EXE device 身份。
 4. 用户点击“浏览社区资源页”时，浏览器打开 `https://shinsekai.example.com/resources?bind=XXXXXX`。
-5. 如果网页已有游客或登录态，网站会 claim 这个 EXE 身份，EXE 上传过的资源会出现在网页“我的资源”里，并可编辑、删除和管理。
+5. 如果网页已有登录态，网站会 claim 这个 EXE 身份，EXE 上传过的资源会出现在网页“我的资源”里，并可编辑、删除和管理；如果当前只是游客态，则只记录 claim，资源管理入口继续隐藏，等用户注册或登录后继承。
 6. 如果网页还没有身份，网站会先创建自己的 device 游客身份，再调用 claim 认领 EXE；网页后续上传仍归属网页自己的身份，不会继承 EXE 或主账号 API Key。
 
 ### 2. API Key 上传
@@ -286,7 +287,7 @@ print(auth.bind_code)
 
 `/auth/device/claim` 当前通常不返回新的 API Key，因此响应里的 `api_key` 可能为空。SDK 会保留当前可用的 `client.api_key`，并用返回的 `access_token`、`public_id`、`bind_code`、`is_guest` 更新当前认证状态。
 
-当前网站源码的 claim 语义是共享管理，不是迁移：服务端会在 `user_claims` 里记录“当前用户可管理目标身份资源”的关系，`/api/my-uploads` 会把当前用户自己的资源和已认领资源一起返回。目标身份不会失活，目标资源 `user_id` 和 API Key 不会被改到当前用户名下；删除和编辑接口会额外检查 `user_claims`，所以认领方也可以管理这些资源。注意，删除是全局操作，一个认领方删除资源后，原身份和其他认领方列表里也会消失。
+当前网站源码的 claim 语义是共享引用，不是迁移：服务端会在 `user_claims` 里记录“当前身份认领目标身份资源”的关系。目标身份不会失活，目标资源 `user_id` 和 API Key 不会被改到当前用户名下。注册/登录用户调用 `/api/my-uploads` 时会把自己的资源和已认领资源一起返回，并可通过编辑、删除接口管理这些资源；设备游客只记录认领关系，`/api/my-uploads` 不返回认领来源资源，编辑和删除也会被拒绝。注意，删除是全局操作，一个有权限的认领方删除资源后，原身份和其他认领方列表里也会消失。
 
 ### 6. 打开社区资源页自动绑定
 
@@ -305,9 +306,10 @@ https://shinsekai.example.com/resources?bind=A1B2C3
 
 网页打开后会读取 `?bind=`：
 
-- 如果网页已有登录态或游客态，调用 `/auth/device/claim` 共享 EXE 身份的已上传资源；这些资源会出现在 `/api/my-uploads`，可编辑和删除，但原归属不变。
-- 如果网页没有身份，先调用 `/auth/device` 创建浏览器自己的游客身份，再调用 `/auth/device/claim` 认领 `?bind=` 指向的 EXE。
-- `?bind=` 不授予 API Key，也不迁移 owner；它只让当前网页身份获得目标资源的管理关系。
+- 如果网页已有登录态，调用 `/auth/device/claim` 共享 EXE 身份的已上传资源；这些资源会出现在 `/api/my-uploads`，可编辑和删除，但原归属不变。
+- 如果网页已有游客态，URL claim 会被记录，但游客不会展示或管理认领资源；后续注册或登录后会继承这条认领关系。
+- 如果网页没有身份，先调用 `/auth/device` 创建浏览器自己的游客身份，再调用 `/auth/device/claim` 记录 `?bind=` 指向的 EXE。
+- `?bind=` 不授予 API Key，也不迁移 owner；它只让当前网页身份记录目标资源的认领关系，是否能立即管理取决于当前身份是不是注册/登录账号。
 
 ## 绑定与身份模型
 
@@ -524,7 +526,7 @@ https://shinsekai.example.com/resources?tab=mine&bind=A1B2C3
 auth = client.claim_bind_code("GUEST1")
 ```
 
-调用 `/auth/device/claim`，把另一个 active 绑定码对应的资源共享给当前用户管理。资源原归属不变，但当前用户可以通过 `list_my_uploads()` 看到，并通过 `edit_resource(...)`、`delete_resource(...)` 管理。
+调用 `/auth/device/claim`，把另一个 active 绑定码对应的资源共享给当前身份。资源原归属不变。当前身份如果是注册/登录用户，可以通过 `list_my_uploads()` 看到，并通过 `edit_resource(...)`、`delete_resource(...)` 管理；如果当前身份还是设备游客，服务端只记录认领关系，认领资源会在后续注册或登录后继承。
 
 ### `list_my_uploads()`
 
@@ -532,7 +534,7 @@ auth = client.claim_bind_code("GUEST1")
 uploads = client.list_my_uploads()
 ```
 
-调用 `/api/my-uploads`，返回当前身份可管理的资源列表。列表包含自己上传的资源，也包含通过绑定码 claim 到的资源。
+调用 `/api/my-uploads`，返回当前身份可管理的资源列表。注册/登录用户的列表包含自己上传的资源，也包含通过绑定码 claim 到的资源；设备游客只返回自己上传的资源，不返回已认领来源的资源。
 
 普通 EXE 不建议把这个接口做成本地资源管理页。用户自己的资源编辑、删除、改名、标签维护，建议统一跳转网站登录态完成；SDK 侧只负责上传、展示 `bind_code`、打开 `community_bind_url(...)`。EXE 即使保存了用户手填绑定码，也不应该把它当成本地资源管理密码；网页端 claim 以后再管理资源。
 
@@ -618,7 +620,7 @@ updated = client.edit_resource(
 client.delete_resource(101)
 ```
 
-调用 `DELETE /api/resources/{id}`。服务端允许资源原作者删除，也允许 claim 过该资源所属身份的用户删除。删除会让该资源从所有用户的可见列表中消失。
+调用 `DELETE /api/resources/{id}`。服务端允许资源原作者删除，也允许注册/登录用户删除自己 claim 过的来源身份资源；设备游客不能删除已认领来源的资源。删除会让该资源从所有用户的可见列表中消失。
 
 删除属于高影响操作，普通 EXE 接入建议交给网站后台完成，避免本地误删或把 claim 权限误用成本地管理权限。
 
@@ -628,19 +630,22 @@ client.delete_resource(101)
 auth = client.merge_with_bind_code("A1B2C3")
 ```
 
-这是旧版 `/auth/device/merge` 的兼容入口。新接入优先使用：
+这是旧版 `/auth/device/merge` 的兼容入口。它仍然保留给旧客户端，但当前 MVP 新接入不要把它当作主流程。新接入优先使用：
 
-- 首次上传前已知主用户绑定码：`from_device_file(..., bind_code="A1B2C3")`
-- 事后认领另一个 active 绑定码身份：`claim_bind_code("GUEST1")`
+- EXE 自己上传：`from_device_file(...)`
+- EXE 打开网页绑定页：`community_bind_url(...)`
+- 软件保存用户手填账号码：`build_bind_url("A1B2C3")`
+- 已登录网页或账号态认领另一个 active 绑定码身份：`claim_bind_code("GUEST1")`
 
-### `list_pending()` 与 `delete_pending(...)`
+### `list_pending()`、`delete_pending(...)` 与 `abort_multipart_upload(...)`
 
 ```python
 pending = client.list_pending()
 client.delete_pending(pending_id=7)
+client.abort_multipart_upload(key="uploads/character_pack/demo.char", upload_id="multipart-upload-id")
 ```
 
-用于查看和删除当前身份下未完成的 multipart 上传任务。
+`list_pending()` 用于查看当前身份下未完成的 multipart 上传任务。`delete_pending(...)` 按 pending id 放弃一个服务端记录的未完成上传，适合用户在列表里点击“放弃”。`abort_multipart_upload(...)` 直接按 `key` 和 `upload_id` 调用 `/api/resources/multipart/abort`，适合 SDK 或接入方在已持有当前上传会话信息时主动中断 R2 multipart 上传。
 
 ### `DeviceAuthInfo`
 
@@ -884,6 +889,23 @@ POST /api/resources/multipart/complete
 
 响应示例见 [`upload_resource(...)`](#upload_resource)。
 
+### 6. 中断未完成上传
+
+```http
+DELETE /api/resources/multipart/abort
+```
+
+请求体：
+
+```json
+{
+  "key": "uploads/character_pack/nanami.char",
+  "upload_id": "multipart-upload-id"
+}
+```
+
+SDK 对应 `abort_multipart_upload(key, upload_id)`。它用于已经拿到 `multipart/start` 返回值、但用户主动取消或接入方需要立即终止当前 R2 multipart 会话的场景。只知道 pending id 时，继续使用 `delete_pending(pending_id)`。
+
 ## 批量上传脚本
 
 仓库提供 `upload_apikey.py` 作为简单批量上传脚本。它保留源文件内配置的方式，适合本地操作。
@@ -931,7 +953,7 @@ python -X utf8 upload_apikey.py
 python -m pytest tests -q
 ```
 
-当前本地默认测试结果：`41 passed, 23 skipped`；其中 `8` 个线上冒烟测试和 `15` 个破坏性全量线上测试默认跳过。完整测试矩阵与线上启动方式见 [TESTCASES.md](TESTCASES.md)。
+当前本地默认测试结果：`43 passed, 26 skipped`；跳过项均为需要线上环境变量的冒烟或破坏性全量测试。完整测试矩阵与线上启动方式见 [TESTCASES.md](TESTCASES.md)。
 
 线上测试需要本地环境脚本。复制 `.online_env.example.ps1` 为 `.online_env.ps1` 后填写真实测试地址和 Key；`.online_env.ps1` 已被忽略，不应提交。
 
@@ -943,11 +965,16 @@ python -m pytest tests -q
 | `test_device_id_file_create_and_reuse` | 本地 `device_id` 文件创建与复用。 |
 | `test_device_auth_from_device_and_file` | `/auth/device` 普通设备认证。 |
 | `test_device_auth_without_api_key_uses_access_token_for_upload` | `/auth/device` 返回空 `api_key` 时使用 `access_token` 上传。 |
+| `test_device_auth_prefers_access_token_over_rotating_device_key` | 同时拿到 device key 和 JWT 时优先使用 `access_token`，避免旧 key 串号。 |
 | `test_device_auth_rejects_registered_identity_response` | `/auth/device` 如果返回非游客身份，SDK 直接拒绝，避免 `device_id` 变成注册账号登录凭证。 |
+| `test_device_auth_refreshes_access_token_once_after_401` | 设备 JWT 过期或失效时，只重试一次 `/auth/device` 并替换 token。 |
+| `test_device_auth_refresh_replaces_rotated_device_key_after_401` | 服务端轮换 device key 后，SDK 用新 key 和新 JWT 继续请求。 |
 | `test_device_auth_bind_code_argument_does_not_change_exe_identity` | `bind_code` 兼容参数不会改变 `/auth/device` 请求或 EXE 身份。 |
 | `test_claim_bind_code` | `/auth/device/claim` 认领后更新认证状态。 |
 | `test_merge_compatibility` | 兼容旧 `/auth/device/merge`。 |
 | `test_sequential_upload_full_chain` | 顺序 multipart 上传全链路。 |
+| `test_upload_returns_existing_resource_when_start_reports_duplicate` | `multipart/start` 返回重复资源时直接复用服务端已有结果。 |
+| `test_upload_returns_existing_resource_when_complete_reports_duplicate` | `multipart/complete` 返回重复资源时复用已有资源，不再误判失败。 |
 | `test_device_upload_includes_bind_code_metadata` | 设备模式上传自动携带 `bind_code`。 |
 | `test_character_upload_includes_verified_models` | `.char` 上传携带模型标签并去重。 |
 | `test_upload_includes_user_tags_only_on_complete` | 上传时 `tags` 只在入库阶段提交，过滤空值、重复值和系统类型词。 |
@@ -956,6 +983,7 @@ python -m pytest tests -q
 | `test_parallel_upload_full_chain` | 并行分片上传。 |
 | `test_resume_upload_skips_finished_parts` | 断点续传跳过已完成分片。 |
 | `test_pending_list_and_delete` | 查询和删除 pending 上传。 |
+| `test_abort_multipart_upload_by_key_and_upload_id` | 按 `key` 和 `upload_id` 中断未完成 multipart 上传。 |
 | `test_resource_management_methods` | 查询我的资源、读取标签建议、编辑资源、删除资源，以及模型参数校验。 |
 | `test_error_paths` | HTTP、JSON、PUT、ETag 等错误路径。 |
 | `test_upload_apikey_module_import` | 批量脚本可导入。 |
@@ -964,20 +992,20 @@ python -m pytest tests -q
 
 | 用例 | 覆盖点 |
 |---|---|
-| `test_q1_browser_guest_upload_then_opening_exe_bind_claims_exe_files` | 浏览器游客上传后打开 EXE 绑定页，浏览器 claim EXE 资源；EXE 资源原归属不变。 |
+| `test_q1_browser_guest_upload_then_opening_exe_bind_claims_exe_files` | 浏览器游客上传后打开 EXE 绑定页，游客阶段只记录 claim；注册/登录后继承 EXE 资源，EXE 资源原归属不变。 |
 | `test_q2_new_browser_without_bind_gets_separate_identity` | 新浏览器没有原 `device_id` 和 `bind_code` 时会得到独立身份。 |
-| `test_q3_register_keeps_bind_code_and_deactivates_old_guest_key` | 游客注册后绑定码不变，旧游客 API Key 失效。 |
+| `test_q3_register_keeps_bind_code_and_current_device_key_identity` | 游客注册升级后绑定码不变，当前 device key 仍指向升级后的同一用户，文件不丢。 |
 | `test_q3_logout_refresh_device_auth_creates_new_guest_instead_of_restoring_registered_user` | 游客升级注册后，同一 `device_id` 再走设备认证只会得到新游客，不会恢复注册账号。 |
-| `test_q4_exe_first_upload_then_community_url_claims_exe_files_for_browser_guest` | EXE 先上传，浏览器无身份时先创建自己的 device 身份，再 claim EXE 资源。 |
-| `test_q4_existing_browser_guest_opens_exe_bind_url_claims_exe_files` | 已有浏览器游客打开 EXE 的 `?bind=` 时走 claim，共享管理 EXE 资源。 |
+| `test_q4_exe_first_upload_then_community_url_claims_exe_files_for_browser_guest` | EXE 先上传，浏览器无身份时先创建自己的 device 游客身份，再记录 claim；注册/登录后继承 EXE 资源。 |
+| `test_q4_existing_browser_guest_opens_exe_bind_url_claims_exe_files` | 已有浏览器游客打开 EXE 的 `?bind=` 时走 claim；游客阶段隐藏认领资源，注册/登录后继承。 |
 | `test_q5_bind_code_is_stable_across_auth_register_and_device_bind_argument_is_ignored` | 多次认证、注册后绑定码保持稳定；`bind_code` 兼容参数不会切换身份。 |
-| `test_e1_old_guest_api_key_is_deactivated_after_register_upgrade` | 旧游客 API Key 在注册升级后失效。 |
+| `test_e1_existing_user_login_deactivates_current_guest_key` | 已有账号登录并认领当前游客时，当前游客 key 失效，新 JWT 仍有效。 |
 | `test_e2_repeated_device_auth_with_bind_code_argument_does_not_create_extra_user` | 同设备重复认证即使传入 `bind_code` 兼容参数也不创建多余用户。 |
 | `test_e3_claim_already_bound_is_idempotent_and_self_is_rejected` | 重复认领同一已绑定设备幂等返回，认领自己仍拒绝。 |
 | `test_e3_claim_already_bound_by_another_user_returns_current_identity` | 同一绑定码可被多个用户 claim；各方可管理该绑定码 owner 的资源，但不会互相暴露私有资源。 |
 | `test_e4_no_bind_creates_normal_guest` | 无 `bind_code` 时正常创建游客。 |
 | `test_e4_invalid_bind_falls_back_to_normal_guest_without_merge` | 不存在的 6 位绑定码不会合并资源，会退回普通游客认证。 |
-| `test_e5_guest_upload_then_exe_claim_shares_source_files_one_way` | 游客上传后被 EXE claim，EXE 可管理该绑定码 owner 的资源，源身份不继承 EXE 私有资源。 |
+| `test_e5_guest_upload_then_exe_claim_shares_source_files_one_way` | 游客上传后被 EXE claim，EXE 游客阶段只记录认领关系；升级登录后可管理该绑定码 owner 的资源，源身份不继承 EXE 私有资源。 |
 | `test_shared_claim_does_not_share_claimant_private_files_between_claimants` | 多个用户 claim 同一绑定码时，只共享管理该绑定码 owner 的资源，不共享认领方各自私有资源。 |
 | `test_claimed_resource_can_be_edited_and_deleted_by_claimant` | claim 后认领方可以编辑和删除源绑定码 owner 的资源，未认领用户仍会被拒绝。 |
 

@@ -518,6 +518,21 @@ class ShinsekaiUploadClient:
         """放弃一个未完成的分片上传。"""
         return self._delete_json(f"/api/resources/multipart/pending/{pending_id}", f"放弃未完成上传 {pending_id}")
 
+    def abort_multipart_upload(self, key: str, upload_id: str) -> dict:
+        """按 R2 key 和 upload_id 中断一个未完成的 multipart 上传。"""
+        normalized_key = str(key or "").strip()
+        normalized_upload_id = str(upload_id or "").strip()
+        if not normalized_key or not normalized_upload_id:
+            raise ValueError("key 和 upload_id 不能为空")
+        data = self._delete_json(
+            "/api/resources/multipart/abort",
+            "中断未完成上传",
+            payload={"key": normalized_key, "upload_id": normalized_upload_id},
+        )
+        if not isinstance(data, dict):
+            raise ShinsekaiUploadError("中断未完成上传失败：服务端响应不是对象")
+        return data
+
     def list_my_uploads(self) -> list[dict]:
         """
         列出当前身份可管理的资源。
@@ -881,10 +896,14 @@ class ShinsekaiUploadClient:
             resp = self.session.post(f"{self.base_url}{path}", headers=self._headers(), json=payload, timeout=self.timeout)
         return self._checked_json(resp, action)
 
-    def _delete_json(self, path: str, action: str) -> dict:
-        resp = self.session.delete(f"{self.base_url}{path}", headers=self._headers(), timeout=self.timeout)
+    def _delete_json(self, path: str, action: str, payload: dict | None = None) -> dict:
+        kwargs = {"headers": self._headers(), "timeout": self.timeout}
+        if payload is not None:
+            kwargs["json"] = payload
+        resp = self.session.delete(f"{self.base_url}{path}", **kwargs)
         if resp.status_code == 401 and self._refresh_device_auth():
-            resp = self.session.delete(f"{self.base_url}{path}", headers=self._headers(), timeout=self.timeout)
+            kwargs["headers"] = self._headers()
+            resp = self.session.delete(f"{self.base_url}{path}", **kwargs)
         return self._checked_json(resp, action)
 
     def _patch_json(self, path: str, payload: dict, action: str) -> dict:

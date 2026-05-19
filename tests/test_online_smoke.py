@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from shinsekai_upload_client import DEFAULT_PART_SIZE, ShinsekaiUploadClient
+from shinsekai_upload_client import DEFAULT_PART_SIZE, ShinsekaiUploadClient, ShinsekaiUploadError
 
 
 pytestmark = pytest.mark.online
@@ -50,12 +50,21 @@ def device_client(
     bind_code: str | None = None,
     parallel_uploads: int = 5,
 ) -> ShinsekaiUploadClient:
-    return ShinsekaiUploadClient.from_device_file(
-        str(tmp_path / f"{prefix}_device_id.txt"),
-        bind_code=bind_code,
-        base_url=BASE_URL,
-        parallel_uploads=parallel_uploads,
-    )
+    device_path = str(tmp_path / f"{prefix}_device_id.txt")
+    for attempt in range(2):
+        try:
+            return ShinsekaiUploadClient.from_device_file(
+                device_path,
+                bind_code=bind_code,
+                base_url=BASE_URL,
+                parallel_uploads=parallel_uploads,
+            )
+        except ShinsekaiUploadError as exc:
+            if attempt == 0 and "HTTP 429" in str(exc):
+                time.sleep(65)
+                continue
+            raise
+    raise AssertionError("device auth retry loop exhausted")
 
 
 def api_key_client() -> ShinsekaiUploadClient:
@@ -74,6 +83,37 @@ def fetch_my_uploads(client: ShinsekaiUploadClient) -> list[dict]:
     data = resp.json()
     assert isinstance(data, list)
     return data
+
+
+def register_user_from_device(client: ShinsekaiUploadClient, *, email: str, password: str) -> dict:
+    device_id = client.device_auth.device_id if client.device_auth else ""
+    resp = requests.post(
+        f"{BASE_URL}/auth/register",
+        headers={"Content-Type": "application/json"},
+        json={
+            "email": email,
+            "password": password,
+            "nickname": email.split("@")[0],
+            "device_id": device_id,
+        },
+        timeout=60,
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert isinstance(data, dict)
+    return data
+
+
+def login_client(email: str, password: str, *, device_id: str = "") -> ShinsekaiUploadClient:
+    resp = requests.post(
+        f"{BASE_URL}/auth/login",
+        headers={"Content-Type": "application/json"},
+        json={"email": email, "password": password, "device_id": device_id},
+        timeout=60,
+    )
+    assert resp.ok, resp.text
+    token = resp.json()["access_token"]
+    return ShinsekaiUploadClient("", access_token=token, base_url=BASE_URL, parallel_uploads=5)
 
 
 def cleanup_resources(client: ShinsekaiUploadClient, resource_ids: list[int]) -> None:
@@ -96,6 +136,52 @@ def test_online_device_bind_code_stable_across_reauth(tmp_path: Path):
     assert len(client1.bind_code) == 6
     assert client2.bind_code == client1.bind_code
     assert client2.access_token
+
+
+def test_online_device_reauth_rotates_key_and_rejects_stale_key(tmp_path: Path):
+    require_online()
+
+    client1 = device_client(tmp_path, "rotate_key")
+    old_key = client1.api_key
+    client2 = device_client(tmp_path, "rotate_key")
+
+    assert old_key
+    assert client2.bind_code == client1.bind_code
+    assert client2.api_key
+    assert client2.api_key != old_key
+    with pytest.raises(ShinsekaiUploadError):
+        ShinsekaiUploadClient(old_key, base_url=BASE_URL).list_my_uploads()
+    assert isinstance(client2.list_my_uploads(), list)
+
+
+def test_online_abort_multipart_upload_by_key_and_upload_id(tmp_path: Path):
+    require_online()
+
+    client = device_client(tmp_path, "abort")
+    pending_id = None
+    start = client._post_json(
+        "/api/resources/multipart/start",
+        {
+            "display_name": unique_name("abort_multipart"),
+            "filename": "abort-multipart.char",
+            "resource_type": "character_pack",
+            "content_type": "application/octet-stream",
+            "total_size": DEFAULT_PART_SIZE + 1,
+            "sha256": f"abort-{uuid.uuid4().hex}",
+        },
+        "start abort smoke upload",
+    )
+    pending_id = start.get("pending_id")
+
+    try:
+        aborted = client.abort_multipart_upload(start["key"], start["upload_id"])
+        assert aborted["status"] == "aborted"
+    finally:
+        if pending_id is not None:
+            try:
+                client.delete_pending(int(pending_id))
+            except Exception:
+                pass
 
 
 def test_online_device_character_upload_bind_url_and_my_uploads(tmp_path: Path):
@@ -225,12 +311,15 @@ def test_online_device_bind_code_argument_does_not_change_upload_owner(tmp_path:
             cleanup_resources(slave, slave_created)
 
 
-def test_online_claim_guest_bind_code_syncs_uploads(tmp_path: Path):
+def test_online_guest_claim_bind_code_is_hidden_until_login(tmp_path: Path):
     require_online()
     current_created: list[int] = []
     guest_created: list[int] = []
+    password = "CodexOnlineSmoke123!"
+    email = f"codex-smoke-claim-{uuid.uuid4().hex[:12]}@example.com"
     current = device_client(tmp_path, "claim_current")
     guest = device_client(tmp_path, "claim_guest")
+    device_id = current.device_auth.device_id
 
     try:
         current_file = tmp_path / f"{unique_name('current')}.char"
@@ -248,9 +337,16 @@ def test_online_claim_guest_bind_code_syncs_uploads(tmp_path: Path):
         ids = {item["id"] for item in uploads}
 
         assert current_result["id"] in ids
-        assert guest_result["id"] in ids
+        assert guest_result["id"] not in ids
+
+        register_user_from_device(current, email=email, password=password)
+        registered = login_client(email, password, device_id=device_id)
+        registered_ids = {item["id"] for item in fetch_my_uploads(registered)}
+
+        assert current_result["id"] in registered_ids
+        assert guest_result["id"] in registered_ids
     finally:
-        cleanup_resources(current, current_created)
+        cleanup_resources(registered if "registered" in locals() else current, current_created)
         cleanup_resources(guest, guest_created)
 
 

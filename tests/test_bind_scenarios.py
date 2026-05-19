@@ -44,8 +44,23 @@ class BindScenarioServer:
             user = self.create_user(role="user")
         user.role = "user"
         user.device_id = ""
-        self.deactivate_api_keys(user)
         return user
+
+    def login(self, user: Identity, device_id: str = "") -> dict:
+        if device_id:
+            guest = self.find_active_by_device(device_id)
+            if guest and guest.id != user.id:
+                for resource in self.resources:
+                    if resource["user_id"] == guest.id:
+                        resource["user_id"] = user.id
+                self.user_claims = {
+                    (user.id if owner_id == guest.id else owner_id, source_id)
+                    for owner_id, source_id in self.user_claims
+                    if source_id != user.id
+                }
+                self.deactivate_api_keys(guest)
+                guest.is_active = False
+        return self.issue_auth(user, include_api_key=False)
 
     def claim(self, current_api_key: str, bind_code: str) -> dict:
         current = self.user_for_token(current_api_key)
@@ -68,7 +83,8 @@ class BindScenarioServer:
     def my_uploads(self, api_key: str) -> list[dict]:
         user = self.user_for_token(api_key)
         visible_user_ids = {user.id}
-        visible_user_ids.update(source_id for owner_id, source_id in self.user_claims if owner_id == user.id)
+        if user.role != "device":
+            visible_user_ids.update(source_id for owner_id, source_id in self.user_claims if owner_id == user.id)
         return [resource for resource in self.resources if resource["user_id"] in visible_user_ids]
 
     def edit_resource(self, api_key: str, resource_id: int, name: str) -> dict:
@@ -159,7 +175,12 @@ class BindScenarioServer:
         return next((resource for resource in self.resources if resource["id"] == resource_id), None)
 
     def can_manage(self, user_id: int, resource_owner_id: int) -> bool:
-        return user_id == resource_owner_id or (user_id, resource_owner_id) in self.user_claims
+        user = self.users[user_id]
+        if user_id == resource_owner_id:
+            return True
+        if user.role == "device":
+            return False
+        return (user_id, resource_owner_id) in self.user_claims
 
     def active_user_count(self) -> int:
         return sum(1 for user in self.users.values() if user.is_active)
@@ -181,8 +202,11 @@ def test_q1_browser_guest_upload_then_opening_exe_bind_claims_exe_files():
 
     server.open_web_with_bind("browser-a", exe["bind_code"], logged_api_key=auth_token(browser))
 
-    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["browser-file", "exe-file"]
+    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["browser-file"]
     assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file"]
+    registered = server.register("browser-a", "alice@example.com")
+    registered_auth = server.issue_auth(registered, include_api_key=False)
+    assert [item["name"] for item in server.my_uploads(auth_token(registered_auth))] == ["browser-file", "exe-file"]
 
 
 def test_q2_new_browser_without_bind_gets_separate_identity():
@@ -196,7 +220,7 @@ def test_q2_new_browser_without_bind_gets_separate_identity():
     assert [item["name"] for item in server.my_uploads(auth_token(browser_b))] == []
 
 
-def test_q3_register_keeps_bind_code_and_deactivates_old_guest_key():
+def test_q3_register_keeps_bind_code_and_current_device_key_identity():
     server = BindScenarioServer()
     guest = server.auth_device("browser-a")
     before_bind = guest["bind_code"]
@@ -206,8 +230,7 @@ def test_q3_register_keeps_bind_code_and_deactivates_old_guest_key():
 
     assert user.bind_code == before_bind
     assert user.role == "user"
-    with pytest.raises(ValueError):
-        server.upload(auth_token(guest), "after-register-file")
+    assert [item["name"] for item in server.my_uploads(auth_token(guest))] == ["guest-file"]
     fresh = server.issue_auth(user, include_api_key=False)
     assert [item["name"] for item in server.my_uploads(auth_token(fresh))] == ["guest-file"]
 
@@ -236,10 +259,13 @@ def test_q4_exe_first_upload_then_community_url_claims_exe_files_for_browser_gue
 
     assert browser["bind_code"] != exe["bind_code"]
     assert browser["is_guest"] is True
-    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["exe-file"]
+    assert server.my_uploads(auth_token(browser)) == []
     server.upload(auth_token(browser), "browser-future-file")
-    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["exe-file", "browser-future-file"]
+    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["browser-future-file"]
     assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file"]
+    registered = server.register("browser-a", "alice@example.com")
+    registered_auth = server.issue_auth(registered, include_api_key=False)
+    assert [item["name"] for item in server.my_uploads(auth_token(registered_auth))] == ["exe-file", "browser-future-file"]
 
 
 def test_q4_existing_browser_guest_opens_exe_bind_url_claims_exe_files():
@@ -254,8 +280,11 @@ def test_q4_existing_browser_guest_opens_exe_bind_url_claims_exe_files():
     after = server.open_web_with_bind("browser-a", bind, logged_api_key=auth_token(browser))
 
     assert after["bind_code"] == browser["bind_code"]
-    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["browser-file", "exe-file"]
+    assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["browser-file"]
     assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file"]
+    registered = server.register("browser-a", "alice@example.com")
+    registered_auth = server.issue_auth(registered, include_api_key=False)
+    assert [item["name"] for item in server.my_uploads(auth_token(registered_auth))] == ["browser-file", "exe-file"]
 
 
 def test_q5_bind_code_is_stable_across_auth_register_and_device_bind_argument_is_ignored():
@@ -271,13 +300,17 @@ def test_q5_bind_code_is_stable_across_auth_register_and_device_bind_argument_is
     assert exe["bind_code"] != first["bind_code"]
 
 
-def test_e1_old_guest_api_key_is_deactivated_after_register_upgrade():
+def test_e1_existing_user_login_deactivates_current_guest_key():
     server = BindScenarioServer()
+    user = server.create_user(role="user")
     guest = server.auth_device("browser-a")
-    server.register("browser-a", "alice@example.com")
+    server.upload(auth_token(guest), "guest-file")
+
+    logged_in = server.login(user, device_id="browser-a")
 
     with pytest.raises(ValueError):
         server.upload(auth_token(guest), "after-register-file")
+    assert [item["name"] for item in server.my_uploads(auth_token(logged_in))] == ["guest-file"]
 
 
 def test_e2_repeated_device_auth_with_bind_code_argument_does_not_create_extra_user():
@@ -309,8 +342,12 @@ def test_e3_claim_already_bound_is_idempotent_and_self_is_rejected():
 
 def test_e3_claim_already_bound_by_another_user_returns_current_identity():
     server = BindScenarioServer()
-    master_a = server.auth_device("browser-a")
-    master_b = server.auth_device("browser-b")
+    master_a_guest = server.auth_device("browser-a")
+    master_b_guest = server.auth_device("browser-b")
+    master_a_user = server.register("browser-a", "a@example.com")
+    master_b_user = server.register("browser-b", "b@example.com")
+    master_a = server.issue_auth(master_a_user, include_api_key=False)
+    master_b = server.issue_auth(master_b_user, include_api_key=False)
     source = server.auth_device("exe-a")
     server.upload(auth_token(source), "source-file")
 
@@ -335,7 +372,10 @@ def test_registered_bind_can_be_claimed_but_device_auth_does_not_prebind_future_
     claim = server.claim(auth_token(outsider), registered.bind_code)
 
     assert claim["bind_code"] == outsider["bind_code"]
-    assert [item["name"] for item in server.my_uploads(auth_token(outsider))] == ["registered-before-file"]
+    assert server.my_uploads(auth_token(outsider)) == []
+    outsider_user = server.register("outsider-device", "outsider@example.com")
+    outsider_auth = server.issue_auth(outsider_user, include_api_key=False)
+    assert [item["name"] for item in server.my_uploads(auth_token(outsider_auth))] == ["registered-before-file"]
 
     third = server.auth_device("third-device", bind_code=registered.bind_code)
     server.upload(auth_token(third), "third-prebound-file")
@@ -374,15 +414,22 @@ def test_e5_guest_upload_then_exe_claim_shares_source_files_one_way():
     server.claim(auth_token(exe), browser["bind_code"])
     server.upload(auth_token(exe), "exe-file")
 
-    assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["browser-file", "exe-file"]
+    assert [item["name"] for item in server.my_uploads(auth_token(exe))] == ["exe-file"]
     assert [item["name"] for item in server.my_uploads(auth_token(browser))] == ["browser-file"]
+    exe_user = server.register("exe-a", "exe@example.com")
+    exe_auth = server.issue_auth(exe_user, include_api_key=False)
+    assert [item["name"] for item in server.my_uploads(auth_token(exe_auth))] == ["browser-file", "exe-file"]
 
 
 def test_shared_claim_does_not_share_claimant_private_files_between_claimants():
     server = BindScenarioServer()
     source = server.auth_device("source-device")
-    master_a = server.auth_device("browser-a")
-    master_b = server.auth_device("browser-b")
+    master_a_guest = server.auth_device("browser-a")
+    master_b_guest = server.auth_device("browser-b")
+    master_a_user = server.register("browser-a", "a@example.com")
+    master_b_user = server.register("browser-b", "b@example.com")
+    master_a = server.issue_auth(master_a_user, include_api_key=False)
+    master_b = server.issue_auth(master_b_user, include_api_key=False)
     server.upload(auth_token(source), "shared-source-file")
     server.upload(auth_token(master_a), "a-private-file")
     server.upload(auth_token(master_b), "b-private-file")
@@ -403,7 +450,9 @@ def test_shared_claim_does_not_share_claimant_private_files_between_claimants():
 def test_claimed_resource_can_be_edited_and_deleted_by_claimant():
     server = BindScenarioServer()
     source = server.auth_device("source-device")
-    claimant = server.auth_device("browser-a")
+    claimant_guest = server.auth_device("browser-a")
+    claimant_user = server.register("browser-a", "claimant@example.com")
+    claimant = server.issue_auth(claimant_user, include_api_key=False)
     outsider = server.auth_device("browser-b")
     resource = server.upload(auth_token(source), "source-file")
 

@@ -37,6 +37,7 @@ class FakeServerSession:
         device_access_token="jwt-device",
         duplicate_start=False,
         duplicate_complete=False,
+        device_api_keys=None,
         device_access_tokens=None,
         reject_tokens=None,
         device_is_guest=True,
@@ -48,6 +49,7 @@ class FakeServerSession:
         self.device_access_token = device_access_token
         self.duplicate_start = duplicate_start
         self.duplicate_complete = duplicate_complete
+        self.device_api_keys = list(device_api_keys or [])
         self.device_access_tokens = list(device_access_tokens or [])
         self.reject_tokens = set(reject_tokens or [])
         self.device_is_guest = device_is_guest
@@ -85,9 +87,10 @@ class FakeServerSession:
         if url.endswith("/auth/device"):
             self._assert_device_auth_payload(payload)
             access_token = self._next_device_access_token()
+            api_key = self._next_device_api_key()
             return FakeResponse({
                 "access_token": access_token,
-                "api_key": self.device_api_key,
+                "api_key": api_key,
                 "public_id": "pub-device",
                 "bind_code": "EXE123",
                 "is_guest": self.device_is_guest,
@@ -181,12 +184,17 @@ class FakeServerSession:
             return FakeResponse([{"id": 101, "name": "role", "type": "character"}])
         return FakeResponse([{"id": 7, "filename": "pending.char"}])
 
-    def delete(self, url, headers=None, timeout=None):
+    def delete(self, url, headers=None, json=None, timeout=None):
         self.deletes.append((url, headers or {}))
         rejected = self._maybe_reject_auth(headers or {})
         if rejected:
             return rejected
         self._assert_auth_header(headers or {})
+        if url.endswith("/api/resources/multipart/abort"):
+            payload = json or {}
+            if payload.get("key") != "obj-key" or payload.get("upload_id") != "upload-id":
+                raise AssertionError("abort requires key and upload_id")
+            return FakeResponse({"status": "aborted"})
         if url.endswith("/api/resources/multipart/pending/7"):
             return FakeResponse({"ok": True, "deleted": 7})
         if url.endswith("/api/resources/101"):
@@ -229,6 +237,12 @@ class FakeServerSession:
             token = self.device_access_token
         self.auth_device_calls += 1
         return token
+
+    def _next_device_api_key(self):
+        if self.device_api_keys:
+            index = min(max(self.auth_device_calls - 1, 0), len(self.device_api_keys) - 1)
+            return self.device_api_keys[index]
+        return self.device_api_key
 
     def _maybe_reject_auth(self, headers):
         auth = headers.get("Authorization", "")
@@ -373,6 +387,28 @@ def test_device_auth_refreshes_access_token_once_after_401():
     uploads = client.list_my_uploads()
 
     assert uploads[0]["id"] == 101
+    assert client.access_token == "jwt-fresh"
+    assert fake.auth_device_calls == 2
+    assert fake.gets[0][1]["Authorization"] == "Bearer jwt-expired"
+    assert fake.gets[1][1]["Authorization"] == "Bearer jwt-fresh"
+
+
+def test_device_auth_refresh_replaces_rotated_device_key_after_401():
+    fake = FakeServerSession(
+        device_api_keys=["sk-sn-expired", "sk-sn-fresh"],
+        device_access_tokens=["jwt-expired", "jwt-fresh"],
+        reject_tokens={"jwt-expired"},
+    )
+    client = ShinsekaiUploadClient.from_device(
+        device_id="device-1",
+        base_url="https://api.test",
+        session=fake,
+    )
+
+    uploads = client.list_my_uploads()
+
+    assert uploads[0]["id"] == 101
+    assert client.api_key == "sk-sn-fresh"
     assert client.access_token == "jwt-fresh"
     assert fake.auth_device_calls == 2
     assert fake.gets[0][1]["Authorization"] == "Bearer jwt-expired"
@@ -620,6 +656,16 @@ def test_pending_list_and_delete():
     assert deleted["deleted"] == 7
     assert fake.gets[0][0].endswith("/api/resources/multipart/pending")
     assert fake.deletes[0][0].endswith("/api/resources/multipart/pending/7")
+
+
+def test_abort_multipart_upload_by_key_and_upload_id():
+    fake = FakeServerSession()
+    client = ShinsekaiUploadClient("sk-sn-old", base_url="https://api.test", session=fake)
+
+    aborted = client.abort_multipart_upload("obj-key", "upload-id")
+
+    assert aborted == {"status": "aborted"}
+    assert fake.deletes[0][0].endswith("/api/resources/multipart/abort")
 
 
 def test_resource_management_methods():
