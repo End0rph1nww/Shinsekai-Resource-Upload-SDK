@@ -13,7 +13,7 @@ EXE 或桌面客户端可以改走设备认证：
     print(client.device_auth.bind_code)
 
 绑定码由服务端为用户生成。客户端只负责展示自己的绑定码，或者把用户输入的
-另一个设备绑定码提交给 /auth/device/claim，用来建立跨设备资源管理关系。旧版
+另一个 active 身份绑定码提交给 /auth/device/claim，用来建立跨身份资源管理关系。旧版
 /auth/device/merge 仍保留为兼容入口，并沿用迁移语义。
 
 分片上传默认顺序执行。把 ``parallel_uploads`` 设为大于 1 的值即可并行上传分片。
@@ -274,7 +274,7 @@ class ShinsekaiUploadClient:
         用当前身份认领另一个设备或游客的绑定码。
 
         这对应 /auth/device/claim：当前客户端必须已经有可用 API Key 或 JWT。新版服务端会在
-        user_claims 里记录“当前用户可管理目标游客资源”的关系，/api/my-uploads 会合并这些资源；
+        user_claims 里记录“当前用户可管理目标身份资源”的关系，/api/my-uploads 会合并这些资源；
         原资源归属和 API Key 不迁移。编辑和删除接口会同时校验资源原作者与 user_claims。
         接口通常不会返回新的 API Key，所以 SDK 会保留当前 self.api_key。
         """
@@ -546,7 +546,7 @@ class ShinsekaiUploadClient:
         """
         删除当前身份可管理的资源。
 
-        服务端允许资源原上传者删除；如果当前用户 claim 过该资源所属游客身份，也允许删除。
+        服务端允许资源原上传者删除；如果当前用户 claim 过该资源所属身份，也允许删除。
         删除是全局操作，资源会从所有可见列表中消失。
         """
         rid = self._validate_resource_id(resource_id)

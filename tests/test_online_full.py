@@ -345,7 +345,7 @@ def test_online_full_unclaimed_resource_edit_delete_forbidden(tmp_path: Path):
         cleanup_resources(owner, owner_created)
 
 
-def test_online_full_registered_bind_claim_rejected_but_prebind_uploads_sync(tmp_path: Path):
+def test_online_full_registered_bind_can_be_claimed_and_prebind_uploads_sync(tmp_path: Path):
     require_full_online()
     created: list[int] = []
     password = "CodexOnlineFull123!"
@@ -358,9 +358,11 @@ def test_online_full_registered_bind_claim_rejected_but_prebind_uploads_sync(tmp
         register_user_from_device(guest, email=email, password=password)
         registered = login_client(email, password, device_id=device_id)
         outsider = full_device_client(tmp_path, "full_registered_bind_outsider")
+        registered_file = upload_char(registered, tmp_path, "full_registered_bind_owner", created)
 
-        with pytest.raises(ShinsekaiUploadError):
-            outsider.claim_bind_code(before_bind)
+        claim = outsider.claim_bind_code(before_bind)
+        assert claim.bind_code == outsider.bind_code
+        assert int(registered_file["id"]) in upload_ids(outsider)
 
         third = full_device_client(tmp_path, "full_registered_bind_third", bind_code=before_bind)
         uploaded = upload_char(third, tmp_path, "full_registered_bind_third", created)

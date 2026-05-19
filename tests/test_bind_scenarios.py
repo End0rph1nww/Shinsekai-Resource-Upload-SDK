@@ -315,6 +315,29 @@ def test_e3_claim_already_bound_by_another_user_returns_current_identity():
     assert server.find_by_bind_code(source["bind_code"]).is_active is True
 
 
+def test_registered_bind_can_be_claimed_and_prebinds_future_uploads():
+    server = BindScenarioServer()
+    guest = server.auth_device("registered-device")
+    server.upload(auth_token(guest), "registered-before-file")
+    registered = server.register("registered-device", "alice@example.com")
+    registered_auth = server.issue_auth(registered, include_api_key=False)
+
+    outsider = server.auth_device("outsider-device")
+    claim = server.claim(auth_token(outsider), registered.bind_code)
+
+    assert claim["bind_code"] == outsider["bind_code"]
+    assert [item["name"] for item in server.my_uploads(auth_token(outsider))] == ["registered-before-file"]
+
+    third = server.auth_device("third-device", bind_code=registered.bind_code)
+    server.upload(auth_token(third), "third-prebound-file")
+
+    assert [item["name"] for item in server.my_uploads(auth_token(registered_auth))] == [
+        "registered-before-file",
+        "third-prebound-file",
+    ]
+    assert server.my_uploads(auth_token(third)) == []
+
+
 def test_e4_no_bind_creates_normal_guest():
     server = BindScenarioServer()
     guest = server.auth_device("browser-a")

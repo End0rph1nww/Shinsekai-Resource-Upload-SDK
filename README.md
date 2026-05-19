@@ -10,6 +10,7 @@ SDK 封装了 `.char` 角色包与 `.bg` 背景包的上传流程，也封装了
 - [推荐接入流程](#推荐接入流程)
 - [安装](#安装)
 - [快速开始](#快速开始)
+- [客户端展示和下载公开资源](#客户端展示和下载公开资源)
 - [绑定与身份模型](#绑定与身份模型)
 - [API 参考](#api-参考)
 - [上传接口协议](#上传接口协议)
@@ -25,12 +26,13 @@ SDK 封装了 `.char` 角色包与 `.bg` 背景包的上传流程，也封装了
 | EXE 设备认证 | EXE 在用户点击上传时生成或读取稳定 `device_id`，调用 `/auth/device` 获取身份。 |
 | 固定绑定码 | `bind_code` 由服务端生成，同一用户身份下保持不变。EXE 不应本地生成六位绑定码。 |
 | `?bind=` 自动同步 | EXE 上传后打开 `/resources?bind=XXXXXX`，网页可自动预绑定或管理 EXE 已上传资源。 |
-| 预绑定 | EXE 首次上传前已知主用户绑定码时，可直接挂到主用户名下。 |
-| 事后认领 | 一个游客设备已经上传过资源后，当前用户可用该游客绑定码建立共享管理关系。 |
+| 预绑定 | EXE 首次上传前已知主用户绑定码时，仍使用自己的 device 身份上传，但资源 owner 会解析到该绑定码对应用户。 |
+| 事后认领 | 当前用户可用另一个 active 身份的绑定码建立共享管理关系；资源原归属不变。 |
 | 并行分片上传 | `parallel_uploads` 支持顺序或并行上传分片。 |
 | 断点续传 | 服务端返回 `parts_done` 时，SDK 会跳过已完成分片。 |
 | 模型标签 | `verified_models` 只允许用于 `.char` / `character_pack`。 |
 | 用户标签 | `tags` 是用户自定义筛选标签，上传入库时提交，网站通过 `/api/tags` 做自动补全。 |
+| 公开资源浏览/下载 | 客户端可直接请求 `/api/resources` 获取全站公开资源列表，并使用返回对象里的 `url` 直链下载文件。 |
 
 ## 推荐接入流程
 
@@ -174,6 +176,36 @@ client.upload_resource(
 )
 ```
 
+### 客户端展示和下载公开资源
+
+SDK 只负责上传，不把下载器写死进客户端。如果软件内需要展示资源站或下载公开资源，直接请求全站公开 API，然后用资源对象里的 `url` 做普通 HTTP 下载即可。
+
+```http
+GET https://api.example.com/api/resources?type=character_pack&offset=0&limit=100
+GET https://api.example.com/api/resources?type=background_pack&offset=0&limit=100
+```
+
+分页规则：`offset` 从 0 开始，`limit` 默认 12，最大 100。`type` 可选；筛选角色包用 `character_pack`，筛选背景包用 `background_pack`。响应里的 `type` 会规整成 `character` 或 `background`。
+
+```python
+import requests
+
+resp = requests.get(
+    "https://api.example.com/api/resources",
+    params={"type": "character_pack", "offset": 0, "limit": 100},
+    timeout=60,
+)
+resp.raise_for_status()
+
+for item in resp.json()["items"]:
+    file_resp = requests.get(item["url"], timeout=120)
+    file_resp.raise_for_status()
+    with open(f"{item['name']}.char", "wb") as f:
+        f.write(file_resp.content)
+```
+
+资源管理和下载是两条不同路径：用户编辑、删除、改名和标签维护建议跳转网站登录态完成；客户端展示公开资源库和下载公开文件时，不需要登录态，也不需要带 SDK 的 API Key 或 JWT。
+
 ### 3. EXE 上传按钮
 
 EXE 推荐在用户点击上传时调用 `from_device_file(...)`。
@@ -224,7 +256,7 @@ def on_upload_button_clicked(filepath: str):
 
 ### 4. EXE 首次上传前预绑定
 
-如果用户已经知道网页账号或主设备的绑定码，可以在 EXE 首次上传时传入 `bind_code`。服务端会把当前 EXE `device_id` 直接挂到该绑定码对应的用户下。
+如果用户已经知道网页账号或主设备的绑定码，可以在 EXE 首次上传时传入 `bind_code`。服务端会为当前 EXE 创建或复用自己的 device 身份，并建立到该绑定码 owner 的预绑定关系。
 
 ```python
 client = ShinsekaiUploadClient.from_device_file(
@@ -236,11 +268,11 @@ client = ShinsekaiUploadClient.from_device_file(
 client.upload_resource("七海千秋", "./nanami.char", "character_pack")
 ```
 
-此模式下，EXE 上传的资源从一开始就属于绑定码对应的主用户。
+此模式下，EXE 上传的资源从一开始就属于绑定码对应的 owner。EXE 自己仍然是 device 身份，不会继承 owner 的 API Key、登录态、完整资源列表或编辑删除权限。资源编辑、删除、改名和标签维护建议由用户去网站登录态完成。
 
-### 5. 事后认领并管理游客资源
+### 5. 事后认领并管理资源
 
-如果某个游客设备已经上传过资源，当前用户可以用该游客设备显示的绑定码建立共享管理关系。
+如果某个身份已经上传过资源，当前用户可以用该身份显示的绑定码建立共享管理关系。
 
 ```python
 client = ShinsekaiUploadClient.from_device_file("./alice_device_id.txt")
@@ -252,7 +284,7 @@ print(auth.bind_code)
 
 `/auth/device/claim` 当前通常不返回新的 API Key，因此响应里的 `api_key` 可能为空。SDK 会保留当前可用的 `client.api_key`，并用返回的 `access_token`、`public_id`、`bind_code`、`is_guest` 更新当前认证状态。
 
-当前网站源码的 claim 语义是共享管理，不是迁移：服务端会在 `user_claims` 里记录“当前用户可管理目标游客资源”的关系，`/api/my-uploads` 会把当前用户自己的资源和已认领游客资源一起返回。目标游客不会失活，目标游客的资源 `user_id` 和 API Key 不会被改到当前用户名下；删除和编辑接口会额外检查 `user_claims`，所以认领方也可以管理这些资源。注意，删除是全局操作，一个认领方删除资源后，原游客和其他认领方列表里也会消失。
+当前网站源码的 claim 语义是共享管理，不是迁移：服务端会在 `user_claims` 里记录“当前用户可管理目标身份资源”的关系，`/api/my-uploads` 会把当前用户自己的资源和已认领资源一起返回。目标身份不会失活，目标资源 `user_id` 和 API Key 不会被改到当前用户名下；删除和编辑接口会额外检查 `user_claims`，所以认领方也可以管理这些资源。注意，删除是全局操作，一个认领方删除资源后，原身份和其他认领方列表里也会消失。
 
 ### 6. 打开社区资源页自动绑定
 
@@ -488,7 +520,7 @@ https://shinsekai.example.com/resources?tab=mine&bind=A1B2C3
 auth = client.claim_bind_code("GUEST1")
 ```
 
-调用 `/auth/device/claim`，把另一个游客绑定码对应的资源共享给当前用户管理。资源原归属不变，但当前用户可以通过 `list_my_uploads()` 看到，并通过 `edit_resource(...)`、`delete_resource(...)` 管理。
+调用 `/auth/device/claim`，把另一个 active 绑定码对应的资源共享给当前用户管理。资源原归属不变，但当前用户可以通过 `list_my_uploads()` 看到，并通过 `edit_resource(...)`、`delete_resource(...)` 管理。
 
 ### `list_my_uploads()`
 
@@ -502,11 +534,11 @@ uploads = client.list_my_uploads()
 
 ### 下载与全站资源列表
 
-SDK 不封装下载器，也不封装全站资源列表。原因很简单：这两件事是作者本体更适合掌控的普通 HTTP 能力，不需要把文件保存路径、断点续传、UI 进度、缓存策略写死进上传 SDK。
+SDK 不封装下载器，也不封装全站资源列表。原因很简单：这两件事更适合由接入方按自己的产品形态实现，不需要把文件保存路径、断点续传、UI 进度、缓存策略写死进上传 SDK。
 
-资源管理和下载是两条不同路径：用户管理自己的资源时走网站；作者本体需要展示或下载公开资源时，可以走全站公开列表和资源对象里的 `url` 直链。公开列表不需要登录态，适合做资源浏览、下载入口、缓存索引或本体内置资源站页面。
+资源管理和下载是两条不同路径：用户管理自己的资源时走网站；客户端需要展示或下载公开资源时，可以走全站公开列表和资源对象里的 `url` 直链。公开列表不需要登录态，适合做资源浏览、下载入口、缓存索引或软件内置资源站页面。
 
-上传、`list_my_uploads()`、`GET /api/resources` 返回的资源对象里都会包含 `url` 字段。作者本体需要下载时，直接对这个链接发起普通 HTTP GET 即可。这个链接是 R2 公开直链，不需要再带 SDK 的 API Key 或 JWT。
+上传、`list_my_uploads()`、`GET /api/resources` 返回的资源对象里都会包含 `url` 字段。客户端需要下载时，直接对这个链接发起普通 HTTP GET 即可。这个链接是 R2 公开直链，不需要再带 SDK 的 API Key 或 JWT。
 
 ```python
 import requests
@@ -519,7 +551,7 @@ with open("downloaded.char", "wb") as f:
     f.write(resp.content)
 ```
 
-如果作者本体需要展示全站资源库，直接请求公开 API：
+如果客户端需要展示全站资源库，直接请求公开 API：
 
 ```http
 GET https://api.example.com/api/resources?type=character_pack&offset=0&limit=100
@@ -574,7 +606,7 @@ updated = client.edit_resource(
 
 调用 `PATCH /api/resources/{id}`。`name`、`description`、`tags`、`verified_models` 至少传一个。`verified_models` 只应给角色包使用；传 `verified_models` 时 SDK 要求同时传 `resource_type="character_pack"` 或 `resource_type="character"`，避免背景包误带模型参数。
 
-普通作者本体/EXE 不建议开放本地编辑入口；更推荐打开网站后台，让用户在登录态下管理自己的资源。这个方法主要保留给受控脚本、测试和后台工具使用。
+普通 EXE 不建议开放本地编辑入口；更推荐打开网站后台，让用户在登录态下管理自己的资源。这个方法主要保留给受控脚本、测试和后台工具使用。
 
 ### `delete_resource(...)`
 
@@ -582,7 +614,7 @@ updated = client.edit_resource(
 client.delete_resource(101)
 ```
 
-调用 `DELETE /api/resources/{id}`。服务端允许资源原作者删除，也允许 claim 过该资源所属游客身份的用户删除。删除会让该资源从所有用户的可见列表中消失。
+调用 `DELETE /api/resources/{id}`。服务端允许资源原作者删除，也允许 claim 过该资源所属身份的用户删除。删除会让该资源从所有用户的可见列表中消失。
 
 删除属于高影响操作，普通 EXE 接入建议交给网站后台完成，避免本地误删或把 claim 权限误用成本地管理权限。
 
@@ -595,7 +627,7 @@ auth = client.merge_with_bind_code("A1B2C3")
 这是旧版 `/auth/device/merge` 的兼容入口。新接入优先使用：
 
 - 首次上传前已知主用户绑定码：`from_device_file(..., bind_code="A1B2C3")`
-- 事后认领另一个游客：`claim_bind_code("GUEST1")`
+- 事后认领另一个 active 绑定码身份：`claim_bind_code("GUEST1")`
 
 ### `list_pending()` 与 `delete_pending(...)`
 
@@ -936,12 +968,12 @@ python -m pytest tests -q
 | `test_e1_old_guest_api_key_is_deactivated_after_register_upgrade` | 旧游客 API Key 在注册升级后失效。 |
 | `test_e2_repeated_prebind_same_device_does_not_create_extra_user` | 同设备重复预绑定不创建多余用户。 |
 | `test_e3_claim_already_bound_is_idempotent_and_self_is_rejected` | 重复认领同一已绑定设备幂等返回，认领自己仍拒绝。 |
-| `test_e3_claim_already_bound_by_another_user_returns_current_identity` | 同一游客码可被多个用户 claim；各方可管理游客资源，但不会互相暴露私有资源。 |
+| `test_e3_claim_already_bound_by_another_user_returns_current_identity` | 同一绑定码可被多个用户 claim；各方可管理该绑定码 owner 的资源，但不会互相暴露私有资源。 |
 | `test_e4_no_bind_creates_normal_guest` | 无 `bind_code` 时正常创建游客。 |
 | `test_e4_invalid_bind_falls_back_to_normal_guest_without_merge` | 不存在的 6 位绑定码不会合并资源，会退回普通游客认证。 |
-| `test_e5_guest_upload_then_exe_claim_shares_source_files_one_way` | 游客上传后被 EXE claim，EXE 可管理游客资源，游客不继承 EXE 私有资源。 |
-| `test_shared_claim_does_not_share_claimant_private_files_between_claimants` | 多个用户 claim 同一游客码时，只共享管理该游客资源，不共享认领方各自私有资源。 |
-| `test_claimed_resource_can_be_edited_and_deleted_by_claimant` | claim 后认领方可以编辑和删除源游客资源，未认领用户仍会被拒绝。 |
+| `test_e5_guest_upload_then_exe_claim_shares_source_files_one_way` | 游客上传后被 EXE claim，EXE 可管理该绑定码 owner 的资源，源身份不继承 EXE 私有资源。 |
+| `test_shared_claim_does_not_share_claimant_private_files_between_claimants` | 多个用户 claim 同一绑定码时，只共享管理该绑定码 owner 的资源，不共享认领方各自私有资源。 |
+| `test_claimed_resource_can_be_edited_and_deleted_by_claimant` | claim 后认领方可以编辑和删除源绑定码 owner 的资源，未认领用户仍会被拒绝。 |
 
 ## 常见问题
 
