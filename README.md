@@ -498,6 +498,53 @@ uploads = client.list_my_uploads()
 
 调用 `/api/my-uploads`，返回当前身份可管理的资源列表。列表包含自己上传的资源，也包含通过绑定码 claim 到的资源。
 
+### 下载与全站资源列表
+
+SDK 不封装下载器，也不封装全站资源列表。原因很简单：这两件事是作者本体更适合掌控的普通 HTTP 能力，不需要把文件保存路径、断点续传、UI 进度、缓存策略写死进上传 SDK。
+
+上传、`list_my_uploads()`、`GET /api/resources` 返回的资源对象里都会包含 `url` 字段。作者本体需要下载时，直接对这个链接发起普通 HTTP GET 即可。这个链接是 R2 公开直链，不需要再带 SDK 的 API Key 或 JWT。
+
+```python
+import requests
+
+resource_url = item["url"]
+resp = requests.get(resource_url, timeout=120)
+resp.raise_for_status()
+
+with open("downloaded.char", "wb") as f:
+    f.write(resp.content)
+```
+
+如果作者本体需要展示全站资源库，直接请求公开 API：
+
+```http
+GET https://api.example.com/api/resources?type=character_pack&offset=0&limit=100
+GET https://api.example.com/api/resources?type=background_pack&offset=0&limit=100
+```
+
+`type` 可选；不传时返回全部公开资源。服务端当前返回结构如下：
+
+```json
+{
+  "items": [
+    {
+      "id": 101,
+      "type": "character",
+      "name": "七海千秋",
+      "uploader": "作者名",
+      "time": "2026-05-19",
+      "models": ["GPT-Sovits", "MiniMax"],
+      "tags": ["弹丸论破"],
+      "description": "资源说明",
+      "url": "https://r2.example.com/uploads/character_pack/XXXXXX/nanami.char"
+    }
+  ],
+  "total": 1
+}
+```
+
+其中 `type` 返回给前端时会规整成 `character` 或 `background`；如果要按后端上传类型筛选，请在请求参数里使用 `character_pack` 或 `background_pack`。
+
 ### `list_tags()`
 
 ```python
