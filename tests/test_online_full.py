@@ -158,7 +158,7 @@ def test_online_full_q2_new_device_without_bind_is_separate_identity(tmp_path: P
         cleanup_resources(browser_a, created)
 
 
-def test_online_full_q3_register_keeps_bind_code_and_guest_token_uploads(tmp_path: Path):
+def test_online_full_q3_register_keeps_bind_code_and_deactivates_guest_api_key(tmp_path: Path):
     require_full_online()
     created: list[int] = []
     password = "CodexOnlineFull123!"
@@ -172,18 +172,19 @@ def test_online_full_q3_register_keeps_bind_code_and_guest_token_uploads(tmp_pat
         register_user_from_device(guest, email=email, password=password)
         registered = login_client(email, password, device_id=device_id)
         after_me = get_me(registered)
-        second = upload_char(guest, tmp_path, "full_q3_after_register_guest_token", created)
         ids = {item["id"] for item in fetch_my_uploads(registered)}
 
         assert after_me["role"] == "user"
         assert after_me["bind_code"] == before_bind
         assert first["id"] in ids
-        assert second["id"] in ids
+        old_api_key_client = ShinsekaiUploadClient(guest.api_key, base_url=BASE_URL, parallel_uploads=5)
+        with pytest.raises(ShinsekaiUploadError):
+            upload_char(old_api_key_client, tmp_path, "full_q3_after_register_guest_key", created)
     finally:
-        cleanup_resources(guest, created)
+        cleanup_resources(registered if "registered" in locals() else guest, created)
 
 
-def test_online_full_q4_exe_first_upload_then_web_prebind_syncs(tmp_path: Path):
+def test_online_full_q4_exe_first_upload_then_web_prebinds_future_uploads(tmp_path: Path):
     require_full_online()
     created: list[int] = []
     exe = full_device_client(tmp_path, "full_q4_exe")
@@ -191,10 +192,16 @@ def test_online_full_q4_exe_first_upload_then_web_prebind_syncs(tmp_path: Path):
     try:
         uploaded = upload_char(exe, tmp_path, "full_q4_exe", created)
         web = full_device_client(tmp_path, "full_q4_web", bind_code=exe.bind_code)
-        ids = {item["id"] for item in fetch_my_uploads(web)}
 
         assert web.bind_code == exe.bind_code
+        assert web.device_auth and web.device_auth.is_guest is True
+        assert uploaded["id"] not in {item["id"] for item in fetch_my_uploads(web)}
+
+        web_file = upload_char(web, tmp_path, "full_q4_web_future", created)
+        ids = {item["id"] for item in fetch_my_uploads(exe)}
+
         assert uploaded["id"] in ids
+        assert web_file["id"] in ids
     finally:
         cleanup_resources(exe, created)
 

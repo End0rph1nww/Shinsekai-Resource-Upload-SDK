@@ -213,8 +213,10 @@ def test_online_prebind_second_device_syncs_uploads(tmp_path: Path):
         ids = {item["id"] for item in uploads}
 
         assert slave.bind_code == master.bind_code
+        assert slave.device_auth and slave.device_auth.is_guest is True
         assert first["id"] in ids
         assert second["id"] in ids
+        assert fetch_my_uploads(slave) == []
     finally:
         cleanup_resources(master, created)
 

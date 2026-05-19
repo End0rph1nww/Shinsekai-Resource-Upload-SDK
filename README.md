@@ -498,9 +498,13 @@ uploads = client.list_my_uploads()
 
 调用 `/api/my-uploads`，返回当前身份可管理的资源列表。列表包含自己上传的资源，也包含通过绑定码 claim 到的资源。
 
+普通 EXE 不建议把这个接口做成本地资源管理页。用户自己的资源编辑、删除、改名、标签维护，建议统一跳转网站登录态完成；SDK 侧只负责上传、展示 `bind_code`、打开 `community_bind_url(...)`。尤其是预绑定模式下，EXE 只会把后续上传挂到目标账号名下，不会继承该账号的完整资源列表或管理权限。
+
 ### 下载与全站资源列表
 
 SDK 不封装下载器，也不封装全站资源列表。原因很简单：这两件事是作者本体更适合掌控的普通 HTTP 能力，不需要把文件保存路径、断点续传、UI 进度、缓存策略写死进上传 SDK。
+
+资源管理和下载是两条不同路径：用户管理自己的资源时走网站；作者本体需要展示或下载公开资源时，可以走全站公开列表和资源对象里的 `url` 直链。公开列表不需要登录态，适合做资源浏览、下载入口、缓存索引或本体内置资源站页面。
 
 上传、`list_my_uploads()`、`GET /api/resources` 返回的资源对象里都会包含 `url` 字段。作者本体需要下载时，直接对这个链接发起普通 HTTP GET 即可。这个链接是 R2 公开直链，不需要再带 SDK 的 API Key 或 JWT。
 
@@ -523,6 +527,8 @@ GET https://api.example.com/api/resources?type=background_pack&offset=0&limit=10
 ```
 
 `type` 可选；不传时返回全部公开资源。服务端当前返回结构如下：
+
+分页规则：`offset` 从 0 开始，`limit` 默认 12，最大 100。需要加载更多时继续递增 `offset` 即可。
 
 ```json
 {
@@ -568,6 +574,8 @@ updated = client.edit_resource(
 
 调用 `PATCH /api/resources/{id}`。`name`、`description`、`tags`、`verified_models` 至少传一个。`verified_models` 只应给角色包使用；传 `verified_models` 时 SDK 要求同时传 `resource_type="character_pack"` 或 `resource_type="character"`，避免背景包误带模型参数。
 
+普通作者本体/EXE 不建议开放本地编辑入口；更推荐打开网站后台，让用户在登录态下管理自己的资源。这个方法主要保留给受控脚本、测试和后台工具使用。
+
 ### `delete_resource(...)`
 
 ```python
@@ -575,6 +583,8 @@ client.delete_resource(101)
 ```
 
 调用 `DELETE /api/resources/{id}`。服务端允许资源原作者删除，也允许 claim 过该资源所属游客身份的用户删除。删除会让该资源从所有用户的可见列表中消失。
+
+删除属于高影响操作，普通 EXE 接入建议交给网站后台完成，避免本地误删或把 claim 权限误用成本地管理权限。
 
 ### `merge_with_bind_code(...)` 与 `merge_device(...)`
 
