@@ -37,6 +37,10 @@ class FakeServerSession:
         device_access_token="jwt-device",
         prebind_api_key="sk-sn-master",
         prebind_access_token="jwt-master",
+        duplicate_start=False,
+        duplicate_complete=False,
+        device_access_tokens=None,
+        reject_tokens=None,
     ):
         self.part_size = part_size
         self.done_parts = done_parts or []
@@ -45,6 +49,11 @@ class FakeServerSession:
         self.device_access_token = device_access_token
         self.prebind_api_key = prebind_api_key
         self.prebind_access_token = prebind_access_token
+        self.duplicate_start = duplicate_start
+        self.duplicate_complete = duplicate_complete
+        self.device_access_tokens = list(device_access_tokens or [])
+        self.reject_tokens = set(reject_tokens or [])
+        self.auth_device_calls = 0
         self.posts = []
         self.gets = []
         self.deletes = []
@@ -71,12 +80,16 @@ class FakeServerSession:
         failed = self._maybe_fail(("post", url.rsplit("/", 1)[-1]))
         if failed:
             return failed
+        rejected = self._maybe_reject_auth(headers)
+        if rejected:
+            return rejected
 
         if url.endswith("/auth/device"):
             self._assert_device_auth_payload(payload)
             is_prebound = payload.get("bind_code") == "A1B2C3"
+            access_token = self.prebind_access_token if is_prebound else self._next_device_access_token()
             return FakeResponse({
-                "access_token": self.prebind_access_token if is_prebound else self.device_access_token,
+                "access_token": access_token,
                 "api_key": self.prebind_api_key if is_prebound else self.device_api_key,
                 "public_id": "pub-master" if is_prebound else "pub-device",
                 "bind_code": "A1B2C3" if is_prebound else "EXE123",
@@ -110,6 +123,16 @@ class FakeServerSession:
         if url.endswith("/api/resources/multipart/start"):
             self._assert_auth_header(headers)
             self.started_payload = payload
+            if self.duplicate_start:
+                return FakeResponse({
+                    "upload_id": "",
+                    "key": "",
+                    "part_size": 0,
+                    "total_parts": 0,
+                    "duplicate": True,
+                    "existing_id": 101,
+                    "public_url": "https://cdn.invalid/existing",
+                })
             total_parts = (payload["total_size"] + self.part_size - 1) // self.part_size
             return FakeResponse({
                 "key": "obj-key",
@@ -134,6 +157,12 @@ class FakeServerSession:
             part_numbers = [part["PartNumber"] for part in payload["parts"]]
             if part_numbers != sorted(part_numbers):
                 raise AssertionError("parts must be ordered before complete")
+            if self.duplicate_complete:
+                return FakeResponse({
+                    "duplicate": True,
+                    "existing_id": 202,
+                    "public_url": "https://cdn.invalid/existing-from-complete",
+                })
             return FakeResponse({
                 "id": 101,
                 "url": "https://cdn.invalid/resource",
@@ -145,6 +174,9 @@ class FakeServerSession:
 
     def get(self, url, headers=None, timeout=None):
         self.gets.append((url, headers or {}))
+        rejected = self._maybe_reject_auth(headers or {})
+        if rejected:
+            return rejected
         self._assert_auth_header(headers or {})
         if url.endswith("/api/tags"):
             return FakeResponse(["剧情向", "中文"])
@@ -154,6 +186,9 @@ class FakeServerSession:
 
     def delete(self, url, headers=None, timeout=None):
         self.deletes.append((url, headers or {}))
+        rejected = self._maybe_reject_auth(headers or {})
+        if rejected:
+            return rejected
         self._assert_auth_header(headers or {})
         if url.endswith("/api/resources/multipart/pending/7"):
             return FakeResponse({"ok": True, "deleted": 7})
@@ -164,6 +199,9 @@ class FakeServerSession:
 
     def patch(self, url, headers=None, json=None, timeout=None):
         self.patches.append((url, headers or {}, json or {}))
+        rejected = self._maybe_reject_auth(headers or {})
+        if rejected:
+            return rejected
         self._assert_auth_header(headers or {})
         if not url.endswith("/api/resources/101"):
             raise AssertionError(f"unexpected patch url {url}")
@@ -185,6 +223,24 @@ class FakeServerSession:
     def _assert_auth_header(headers):
         if not headers.get("Authorization", "").startswith("Bearer "):
             raise AssertionError("missing bearer auth")
+
+    def _next_device_access_token(self):
+        if self.device_access_tokens:
+            index = min(self.auth_device_calls, len(self.device_access_tokens) - 1)
+            token = self.device_access_tokens[index]
+        else:
+            token = self.device_access_token
+        self.auth_device_calls += 1
+        return token
+
+    def _maybe_reject_auth(self, headers):
+        auth = headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return None
+        token = auth.removeprefix("Bearer ").strip()
+        if token in self.reject_tokens:
+            return FakeResponse({"detail": "expired token"}, ok=False, status_code=401)
+        return None
 
     @staticmethod
     def _assert_device_auth_payload(payload):
@@ -277,6 +333,44 @@ def test_device_auth_without_api_key_uses_access_token_for_upload(tmp_path):
     assert start_post[1]["Authorization"] == "Bearer jwt-device"
 
 
+def test_device_auth_prefers_access_token_over_rotating_device_key(tmp_path):
+    fake = FakeServerSession(part_size=8)
+    path = tmp_path / "sample.char"
+    make_file(path, b"0123456789")
+
+    client = ShinsekaiUploadClient.from_device(
+        device_id="device-1",
+        base_url="https://api.test",
+        session=fake,
+    )
+    client.upload_resource("role", str(path), "character_pack")
+
+    assert client.api_key == "sk-sn-device"
+    assert client.access_token == "jwt-device"
+    start_post = next(item for item in fake.posts if item[0].endswith("/api/resources/multipart/start"))
+    assert start_post[1]["Authorization"] == "Bearer jwt-device"
+
+
+def test_device_auth_refreshes_access_token_once_after_401():
+    fake = FakeServerSession(
+        device_access_tokens=["jwt-expired", "jwt-fresh"],
+        reject_tokens={"jwt-expired"},
+    )
+    client = ShinsekaiUploadClient.from_device(
+        device_id="device-1",
+        base_url="https://api.test",
+        session=fake,
+    )
+
+    uploads = client.list_my_uploads()
+
+    assert uploads[0]["id"] == 101
+    assert client.access_token == "jwt-fresh"
+    assert fake.auth_device_calls == 2
+    assert fake.gets[0][1]["Authorization"] == "Bearer jwt-expired"
+    assert fake.gets[1][1]["Authorization"] == "Bearer jwt-fresh"
+
+
 def test_device_auth_prebind(tmp_path):
     fake = FakeServerSession()
     client = ShinsekaiUploadClient.from_device_file(
@@ -353,6 +447,40 @@ def test_sequential_upload_full_chain(tmp_path):
     assert "bind_code" not in fake.started_payload
     assert "bind_code" not in fake.complete_payload
     assert progress[0].stage == "hashing"
+    assert progress[-1].stage == "done"
+
+
+def test_upload_returns_existing_resource_when_start_reports_duplicate(tmp_path):
+    fake = FakeServerSession(duplicate_start=True)
+    progress = []
+    path = tmp_path / "sample.char"
+    make_file(path, b"0123456789")
+
+    client = ShinsekaiUploadClient("sk-sn-old", base_url="https://api.test", session=fake)
+    result = client.upload_resource("role", str(path), "character_pack", progress=progress.append)
+
+    assert result["duplicate"] is True
+    assert result["id"] == 101
+    assert result["url"] == "https://cdn.invalid/existing"
+    assert fake.puts == []
+    assert fake.complete_payload is None
+    assert progress[-1].stage == "done"
+
+
+def test_upload_returns_existing_resource_when_complete_reports_duplicate(tmp_path):
+    fake = FakeServerSession(part_size=8, duplicate_complete=True)
+    progress = []
+    path = tmp_path / "sample.char"
+    make_file(path, b"0123456789")
+
+    client = ShinsekaiUploadClient("sk-sn-old", base_url="https://api.test", session=fake)
+    result = client.upload_resource("role", str(path), "character_pack", progress=progress.append)
+
+    assert result["duplicate"] is True
+    assert result["id"] == 202
+    assert result["url"] == "https://cdn.invalid/existing-from-complete"
+    assert fake.puts
+    assert fake.complete_payload is not None
     assert progress[-1].stage == "done"
 
 

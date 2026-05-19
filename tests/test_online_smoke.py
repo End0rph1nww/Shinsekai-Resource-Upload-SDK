@@ -40,8 +40,7 @@ def write_payload(path: Path, size: int, marker: str) -> None:
 
 
 def auth_headers(client: ShinsekaiUploadClient) -> dict[str, str]:
-    token = client.api_key or client.access_token
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return client._headers()
 
 
 def device_client(

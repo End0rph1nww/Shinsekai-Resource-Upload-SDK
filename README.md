@@ -436,7 +436,22 @@ SDK 会去重并保持顺序。未知模型名会抛出 `ValueError`。
   "uploader": "作者名",
   "tags": ["剧情向", "中文"],
   "time": "2026-05-18",
-  "url": "https://r2.example.com/uploads/character_pack/nanami.char"
+  "url": "https://r2.example.com/uploads/character_pack/nanami.char",
+  "etag": "\"r2-etag-value\""
+}
+```
+
+如果同一用户已经上传过相同内容，Private 新分支会在 `multipart/start` 或 `multipart/complete`
+返回 `duplicate: true`。SDK 会直接跳过后续 PUT/complete 流程，并把 `public_url/existing_id`
+规范成常用的 `url/id` 字段，方便调用方按普通上传结果处理：
+
+```json
+{
+  "duplicate": true,
+  "id": 101,
+  "existing_id": 101,
+  "url": "https://r2.example.com/uploads/character_pack/nanami.char",
+  "public_url": "https://r2.example.com/uploads/character_pack/nanami.char"
 }
 ```
 

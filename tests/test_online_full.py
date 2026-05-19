@@ -364,7 +364,7 @@ def test_online_full_registered_bind_claim_rejected_but_prebind_uploads_sync(tmp
         cleanup_resources(registered if "registered" in locals() else guest, created)
 
 
-def test_online_full_duplicate_sha256_is_rejected(tmp_path: Path):
+def test_online_full_duplicate_sha256_returns_existing_resource(tmp_path: Path):
     require_full_online()
     created: list[int] = []
     client = full_device_client(tmp_path, "full_duplicate_sha")
@@ -379,8 +379,10 @@ def test_online_full_duplicate_sha256_is_rejected(tmp_path: Path):
         uploaded = client.upload_resource(unique_name("duplicate_a"), str(first_path), "character_pack")
         created.append(int(uploaded["id"]))
 
-        with pytest.raises(ShinsekaiUploadError):
-            client.upload_resource(unique_name("duplicate_b"), str(second_path), "character_pack")
+        duplicate = client.upload_resource(unique_name("duplicate_b"), str(second_path), "character_pack")
+        assert duplicate["duplicate"] is True
+        assert int(duplicate["id"]) == int(uploaded["id"])
+        assert duplicate["url"] == uploaded["url"]
     finally:
         cleanup_resources(client, created)
 

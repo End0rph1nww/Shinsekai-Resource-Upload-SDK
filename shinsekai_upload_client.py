@@ -415,6 +415,10 @@ class ShinsekaiUploadClient:
             start_payload["verified_models"] = normalized_models
 
         start_data = self._post_json("/api/resources/multipart/start", start_payload, "start")
+        if self._is_duplicate_response(start_data):
+            result = self._normalize_duplicate_result(start_data)
+            self._emit(progress, "done", "duplicate upload skipped", file_size, file_size)
+            return result
 
         key = start_data["key"]
         upload_id = start_data["upload_id"]
@@ -485,8 +489,25 @@ class ShinsekaiUploadClient:
             complete_payload["verified_models"] = normalized_models
 
         result = self._post_json("/api/resources/multipart/complete", complete_payload, "complete")
+        if self._is_duplicate_response(result):
+            result = self._normalize_duplicate_result(result)
+            self._emit(progress, "done", "duplicate upload skipped", file_size, file_size, total_parts=total_parts)
+            return result
 
         self._emit(progress, "done", "上传完成", file_size, file_size, total_parts=total_parts)
+        return result
+
+    @staticmethod
+    def _is_duplicate_response(data: object) -> bool:
+        return isinstance(data, dict) and bool(data.get("duplicate"))
+
+    @staticmethod
+    def _normalize_duplicate_result(data: dict) -> dict:
+        result = dict(data)
+        if "url" not in result and result.get("public_url"):
+            result["url"] = result["public_url"]
+        if "id" not in result and result.get("existing_id"):
+            result["id"] = result["existing_id"]
         return result
 
     def list_pending(self) -> list[dict]:
@@ -840,26 +861,52 @@ class ShinsekaiUploadClient:
         return self._post_json(path, payload, action)
 
     def _headers(self) -> dict[str, str]:
-        token = self.api_key or self.access_token
+        if self.device_auth and self.access_token:
+            token = self.access_token
+        else:
+            token = self.api_key or self.access_token
         if not token:
             raise ShinsekaiUploadError("缺少可用认证令牌，请先提供 API Key 或完成设备认证")
         return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     def _get_json(self, path: str, action: str) -> dict | list:
         resp = self.session.get(f"{self.base_url}{path}", headers=self._headers(), timeout=self.timeout)
+        if resp.status_code == 401 and self._refresh_device_auth():
+            resp = self.session.get(f"{self.base_url}{path}", headers=self._headers(), timeout=self.timeout)
         return self._checked_json(resp, action)
 
     def _post_json(self, path: str, payload: dict, action: str) -> dict:
         resp = self.session.post(f"{self.base_url}{path}", headers=self._headers(), json=payload, timeout=self.timeout)
+        if resp.status_code == 401 and self._refresh_device_auth():
+            resp = self.session.post(f"{self.base_url}{path}", headers=self._headers(), json=payload, timeout=self.timeout)
         return self._checked_json(resp, action)
 
     def _delete_json(self, path: str, action: str) -> dict:
         resp = self.session.delete(f"{self.base_url}{path}", headers=self._headers(), timeout=self.timeout)
+        if resp.status_code == 401 and self._refresh_device_auth():
+            resp = self.session.delete(f"{self.base_url}{path}", headers=self._headers(), timeout=self.timeout)
         return self._checked_json(resp, action)
 
     def _patch_json(self, path: str, payload: dict, action: str) -> dict:
         resp = self.session.patch(f"{self.base_url}{path}", headers=self._headers(), json=payload, timeout=self.timeout)
+        if resp.status_code == 401 and self._refresh_device_auth():
+            resp = self.session.patch(f"{self.base_url}{path}", headers=self._headers(), json=payload, timeout=self.timeout)
         return self._checked_json(resp, action)
+
+    def _refresh_device_auth(self) -> bool:
+        if not self.device_auth or not self.device_auth.device_id:
+            return False
+        auth = self.authenticate_device(
+            device_id=self.device_auth.device_id,
+            bind_code=self.device_auth.bind_code or None,
+            base_url=self.base_url,
+            timeout=self.timeout,
+            session=self.session,
+        )
+        self.api_key = auth.api_key or self.api_key
+        self.access_token = auth.access_token or self.access_token
+        self.device_auth = auth
+        return True
 
     @staticmethod
     def _checked_json(resp: requests.Response, action: str) -> dict | list:
