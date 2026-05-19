@@ -7,6 +7,7 @@ SDK 封装了 `.char` 角色包与 `.bg` 背景包的上传流程，也封装了
 ## 目录
 
 - [核心能力](#核心能力)
+- [作者本体接入能力清单](#作者本体接入能力清单)
 - [推荐接入流程](#推荐接入流程)
 - [安装](#安装)
 - [快速开始](#快速开始)
@@ -31,6 +32,104 @@ SDK 封装了 `.char` 角色包与 `.bg` 背景包的上传流程，也封装了
 | 断点续传 | 服务端返回 `parts_done` 时，SDK 会跳过已完成分片。 |
 | 模型标签 | `verified_models` 只允许用于 `.char` / `character_pack`。 |
 | 用户标签 | `tags` 是用户自定义筛选标签，上传入库时提交，网站通过 `/api/tags` 做自动补全。 |
+
+## 作者本体接入能力清单
+
+作者本体或 EXE 接入时，优先看这一张表。SDK 当前已经封装上传、设备身份、绑定、认领、我的资源、编辑删除、标签和未完成上传；全站公开列表与下载目前是资源站公开 HTTP API，建议作者本体直接请求。下载后的 `.char` / `.bg` 安装导入属于作者本体本地能力，应该交给 Shinsekai 已有导入逻辑处理。
+
+| 场景 | 推荐入口 | 是否需要登录 | 用途 |
+|---|---|---:|---|
+| 创建设备身份 | `ShinsekaiUploadClient.from_device_file(...)` | 否 | EXE 保存稳定 `device_id`，从服务端取得 `access_token`、可能的一次性 `api_key` 和 `bind_code`。 |
+| API Key 模式 | `ShinsekaiUploadClient(api_key, base_url=...)` | 需要 API Key | 已有正式上传 Key 的作者或脚本直接接入。 |
+| 上传角色卡 | `client.upload_resource(..., resource_type="character_pack")` | 是 | 上传 `.char`，可带 `uploader`、`description`、`tags`、`verified_models`。 |
+| 上传背景卡 | `client.upload_resource(..., resource_type="background_pack")` | 是 | 上传 `.bg`，可带 `uploader`、`description`、`tags`，不应传 `verified_models`。 |
+| 查询未完成上传 | `client.list_pending()` | 是 | 展示断点续传池，便于用户继续或清理。 |
+| 放弃未完成上传 | `client.delete_pending(pending_id)` | 是 | 删除 pending，并让服务端释放对应 multipart upload。 |
+| 列出我可管理的资源 | `client.list_my_uploads()` | 是 | 返回自己上传和 claim 到的资源，用于“我的上传/我的资源”管理页。 |
+| 编辑资源 | `client.edit_resource(resource_id, ...)` | 是 | 修改名称、描述、用户标签、角色卡验证模型。 |
+| 删除资源 | `client.delete_resource(resource_id)` | 是 | 删除自己拥有或已 claim 管理的资源。删除是全局操作。 |
+| 拉取标签建议 | `client.list_tags()` | 否 | 读取站内用户标签，给上传表单做自动补全。 |
+| 生成社区页绑定 URL | `client.community_bind_url(...)` / `ShinsekaiUploadClient.build_bind_url(...)` | 否 | 打开 `/resources?bind=XXXXXX`，让网页端认领或预绑定 EXE 资源。 |
+| 事后认领资源 | `client.claim_bind_code(bind_code)` | 是 | 当前身份获得另一个 bind code 对应资源的管理权，资源原归属不变。 |
+| 全站公开资源列表 | `GET /api/resources?type=character_pack` / `background_pack` | 否 | 给作者本体做“社区资源库/下载中心”。当前未封装成 SDK 方法。 |
+| 下载公开资源 | 请求全站列表返回的 `items[].url` | 否 | 直接下载 R2 公开链接。当前未封装成 SDK 方法。 |
+| 安装导入资源 | 作者本体本地导入逻辑 | 否 | `.char` 走角色卡导入，`.bg` 走背景卡导入。SDK 不处理本地文件安装。 |
+
+全站公开列表请求示例：
+
+```python
+import requests
+
+api_base = "https://api.end0rph1n.icu"
+
+resp = requests.get(
+    f"{api_base}/api/resources",
+    params={"type": "character_pack", "offset": 0, "limit": 12},
+    timeout=20,
+)
+resp.raise_for_status()
+
+data = resp.json()
+for item in data["items"]:
+    print(item["id"], item["type"], item["name"], item["url"])
+```
+
+公开列表返回结构：
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "type": "character",
+      "name": "七海千秋",
+      "uploader": "twilight",
+      "time": "2026-05-19",
+      "models": ["GPT-Sovits", "MiniMax", "Qwen"],
+      "tags": ["弹丸论破"],
+      "description": "角色卡描述",
+      "url": "https://r2.end0rph1n.icu/uploads/character_pack/ABC123/uuid.char"
+    }
+  ],
+  "total": 1
+}
+```
+
+下载与导入示例：
+
+```python
+from pathlib import Path
+from urllib.parse import urlparse
+
+import requests
+
+
+def download_resource_item(item: dict, download_dir: str = "./downloads") -> Path:
+    url = item["url"]
+    suffix = Path(urlparse(url).path).suffix
+    if suffix not in {".char", ".bg"}:
+        suffix = ".char" if item.get("type") == "character" else ".bg"
+
+    target = Path(download_dir) / f"{item['id']}{suffix}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    with requests.get(url, stream=True, timeout=60) as resp:
+        resp.raise_for_status()
+        with target.open("wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+    return target
+
+
+path = download_resource_item(data["items"][0])
+
+# 然后交给作者本体已有导入逻辑：
+# if path.suffix == ".char": import_character(path)
+# if path.suffix == ".bg": import_background(path)
+```
+
+当前公开列表没有返回 `file_size`、`sha256`、R2 `key`、所有者或原始 `resource_type`。基础展示和下载只依赖 `url`；如果作者本体要做下载进度、缓存校验或重复安装判断，可以等待后端公开列表补充 `file_size` 和 `sha256` 后再接。
 
 ## 推荐接入流程
 
